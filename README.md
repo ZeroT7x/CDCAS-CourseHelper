@@ -79,7 +79,7 @@ ocr\start-ocr.bat
 
 ```powershell
 # 方式二：PowerShell
-cd D:\deepseek-harness\default-workspace\course-helper\ocr
+cd D: \course-helper\ocr
 .\.venv\Scripts\python.exe .\ddddocr_server.py 8899
 ```
 
@@ -97,7 +97,7 @@ cd D:\deepseek-harness\default-workspace\course-helper\ocr
 
 ```powershell
 # 重建运行环境（会重新下载 ddddocr，约 75MB）
-cd D:\deepseek-harness\default-workspace\course-helper\ocr
+cd D:\course-helper\ocr
 Remove-Item .venv -Recurse -Force
 .\start-ocr.bat
 
