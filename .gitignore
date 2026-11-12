@@ -1,0 +1,9 @@
+# Python 运行环境（391MB，不入库，start-ocr.bat 会自动重建）
+ocr/.venv/
+
+__pycache__/
+*.pyc
+
+# 系统文件
+.DS_Store
+Thumbs.db
