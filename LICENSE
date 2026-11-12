@@ -1,0 +1,74 @@
+# 许可证 / License
+
+**成都文理 · 赛博代刷助手**（`cdwl-cyber-helper.user.js`、`cdwl-cyber-helper.console.js`、`ocr/*`）
+
+- 版权：Copyright (c) 2025 成都文理 · 赛博代刷
+- 许可：**PolyForm Noncommercial License 1.0.0（非商业使用）**
+- 一句话：**个人免费使用，禁止商用。**
+
+本项目采用 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+的精神与条款（下称“本许可”），并补充中文说明如下；中英文冲突时以本文件的中文条款为准。
+
+---
+
+## 一、允许（Permitted）
+
+1. 个人学习、研究、自用，在自己的设备上运行本脚本。
+2. 阅读、修改源码以适配自己的使用场景（修改版须保留本版权与许可声明）。
+3. 非商业性的分享与转载，须注明出处、保留本文件与脚本头部的版权声明，且不得删除或规避“禁止商用”条款。
+
+## 二、禁止（Prohibited）
+
+1. **任何商业使用**，包括但不限于：
+   - 售卖本脚本或其修改版、打包进付费软件/服务；
+   - 以“代刷”“代学”“包过”等名义提供收费服务；
+   - 将本脚本集成到商业产品或 SaaS 平台中；
+   - 用本脚本为商业客户提供服务，或以本脚本招揽客户、广告引流。
+2. 移除、篡改或隐藏脚本头部的版权、许可与免责声明。
+3. 将本脚本用于违反目标网站服务条款、侵害他人权益或违反当地法律法规的用途。
+4. 以本脚本的名义作出任何承诺、担保或背书。
+
+> 商业授权：如需商用，须事先取得著作权人的书面许可。未获许可的一切商业使用均属侵权。
+
+## 三、免责声明（Disclaimer）
+
+1. 本脚本与目标网站及其运营方**无任何关联**，未获其授权、认可或背书；脚本按公开页面结构实现自动化操作。
+2. 本脚本按**“现状（AS IS）”**提供，不附带任何明示或默示担保，包括但不限于适销性、特定用途适用性与不侵权担保。
+3. 不承诺功能可用、结果准确或服务连续；目标网站改版、接口变动、风控策略调整均可能导致脚本失效。
+4. 因下载、安装、使用或无法使用本脚本而产生的**任何直接、间接、附带、特殊或后果性损失**（包括但不限于学业成绩、账号状态、数据丢失、设备损坏、第三方索赔），作者与贡献者**不承担任何责任**。
+5. 使用本脚本即表示你已阅读、理解并同意本文件全部条款；**如不同意，请立即停止使用并删除全部相关文件。**
+6. 你应自行确认使用行为符合所在学校/单位的规定与当地法律法规；相关风险与后果由使用者自行承担。
+
+## 四、第三方组件（Third-party）
+
+`ocr/` 目录下的识别服务依赖以下开源组件，各自遵循其原始许可，本许可不改变其授权：
+
+| 组件 | 用途 | 许可 |
+|---|---|---|
+| ddddocr | 验证码 OCR 模型 | 见其项目仓库 |
+| onnxruntime | 模型推理运行时 | MIT |
+| OpenCV（opencv-python-headless） | 图像处理 | Apache-2.0 |
+| Pillow | 图像读写 | HPND / MIT-CMU |
+| Python 标准库 `http.server` | HTTP 服务 | PSF |
+
+分发本项目时请一并保留上述组件的许可信息。
+
+## 五、终止（Termination）
+
+1. 违反本文件任一条款，你的使用授权**立即自动终止**，无需另行通知。
+2. 授权终止后，你应立即停止使用并删除本项目的全部副本（含修改版）。
+3. 版权人保留追究侵权责任的权利。
+
+---
+
+## 附：English Summary（非正式译文，仅供参照）
+
+This project is licensed under the **PolyForm Noncommercial License 1.0.0**.
+You may use, modify and share it **for noncommercial purposes only**, provided you keep
+the copyright, license and disclaimer notices intact. **Commercial use of any kind is
+prohibited** without prior written permission from the copyright holder.
+
+The software is provided **"AS IS"**, without warranty of any kind. The author is **not
+affiliated with** the target website and **accepts no liability** for any loss or damage
+arising from its use. By using this software you agree to these terms; if you do not
+agree, stop using it and delete all copies immediately.
