@@ -19,7 +19,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '5.0c';
+  const VERSION = '6.1c';
   const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com'];
 
   if (HOSTS.indexOf(location.hostname) < 0) {
@@ -28,10 +28,13 @@
 
   /* ==== 0. 接口优先 ==== */
   const API = { version: VERSION, ready: false, errors: [] };
-  try { window.__CYBER__ = API; } catch (e) {}
-  try { window.CYBER = API; } catch (e) {}
-  try { document.documentElement.setAttribute('data-cyber-ver', VERSION); } catch (e) {}
-  try { console.log('%c[赛博代刷] 注入 v' + VERSION, 'color:#28c76f;font-weight:700', '| __CYBER__ 可用'); } catch (e) {}
+
+  // 随机命名空间：id / class 前缀每次加载都不同，页面脚本无法按固定特征识别
+  const NS = 'n' + Math.random().toString(36).slice(2, 7);
+  const K = 'k' + Math.random().toString(36).slice(2, 5);
+  const PID = NS + '-p', SID = NS + '-s', MID = NS + '-m', PREVID = NS + '-v', INID = NS + '-i', MASTERID = NS + '-x';
+  // 不挂任何固定全局变量，也不写 data-* 标记（这两类是最容易被探测的指纹）
+  try { console.log('%c[赛博代刷] 注入 v' + VERSION, 'color:#28c76f;font-weight:700', '| 已启动'); } catch (e) {}
   try {
     console.log('%c[赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。', 'color:#9aa0a6');
   } catch (e) {}
@@ -53,8 +56,35 @@
     ocrUrl: 'http://127.0.0.1:8899/ocr',
     hidePanel: false,
     panelPos: null,
+    debug: false,            // true 才随机暴露调试接口（默认不暴露，降低指纹）
+    autoNextMode: 'auto',    // auto=自动跳节；prompt=只在面板提示，点了才跳
+    delayMin: 15000,         // 播完到跳节的最短停留（真人不会秒跳）
+    delayMax: 60000,         // 最长停留（每次随机）
+    restEvery: 4,            // 每 N 节休息一次，0=不休息
+    restMin: 300000,         // 休息下限 5 分钟
+    restMax: 900000,         // 休息上限 15 分钟
+    dailyMaxSections: 0,     // 单日最多自动学几节，0=不限
+    humanFill: true,         // 填验证码时派发 mousedown、逐字符键入、补 keypress
+    typeMin: 70,             // 逐字符键入间隔下限 ms
+    typeMax: 240,            // 逐字符键入间隔上限 ms
+    stuckReload: true,       // 播放卡死（位置连续不动）自动刷新
   };
   const CFG = Object.assign({}, DEFAULT, load());
+
+  // 调试接口：只有 CFG.debug 为 true 时，用随机名字挂到 window
+  const DBG_NAME = '_' + Math.random().toString(36).slice(2, 8);
+  function exposeApi() {
+    if (!CFG.debug) {
+      try { console.log('%c[赛博代刷] 调试接口未开启（配置里 debug:true 后刷新）', 'color:#9aa0a6'); } catch (e) {}
+      return '';
+    }
+    try {
+      window[DBG_NAME] = API;
+      console.log('%c[赛博代刷] 本次调试接口名：' + DBG_NAME, 'color:#8ab4f8;font-weight:700', '例：' + DBG_NAME + '.selfTest()');
+      return DBG_NAME;
+    } catch (e) { return ''; }
+  }
+  exposeApi();
   function load() {
     try {
       const cur = localStorage.getItem(KEY);
@@ -108,10 +138,7 @@
       });
     }
   } catch (e) { API.errors.push('倍速钩子: ' + e.message); }
-  try {
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-  } catch (e) {}
+  // 不再覆盖 document.hidden / visibilityState（伪造可见性很容易被交叉校验抓到）
 
   function player() {
     const inBox = $$('#videoContent video, .courseplay-video video, .ckplayer video');
@@ -205,16 +232,67 @@
 
   let armed = true, busy = false, lastAt = 0;
 
+  const randDelay = function () {
+    const a = Math.max(0, Number(CFG.delayMin) || 2000);
+    const b = Math.max(a, Number(CFG.delayMax) || a);
+    return a + Math.random() * (b - a);
+  };
+
+  // 学习配额：单日节数上限 + 每 N 节强制休息
+  const DAY_KEY = '__CDWL_DAY__';
+  function dayStat() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DAY_KEY) || '{}');
+      const today = new Date().toISOString().slice(0, 10);
+      if (raw.date !== today) return { date: today, sections: 0 };
+      return { date: today, sections: Number(raw.sections) || 0 };
+    } catch (e) { return { date: new Date().toISOString().slice(0, 10), sections: 0 }; }
+  }
+  function dayAdd(n) {
+    const st = dayStat();
+    st.sections += n;
+    try { localStorage.setItem(DAY_KEY, JSON.stringify(st)); } catch (e) {}
+    return st;
+  }
+
+  async function quotaGate() {
+    const st = dayStat();
+    const max = Number(CFG.dailyMaxSections) || 0;
+    if (max > 0 && st.sections >= max) {
+      state.status = '今日已自动学习 ' + st.sections + ' 节（上限 ' + max + '），已停止自动跳节';
+      warn(state.status);
+      return false;
+    }
+    const every = Number(CFG.restEvery) || 0;
+    if (every > 0 && st.sections > 0 && st.sections % every === 0) {
+      const a = Math.max(0, Number(CFG.restMin) || 300000);
+      const b = Math.max(a, Number(CFG.restMax) || a);
+      const ms = a + Math.random() * (b - a);
+      state.status = '已连续学 ' + st.sections + ' 节，休息 ' + Math.round(ms / 60000) + ' 分钟';
+      log(state.status);
+      await sleep(ms);
+    }
+    dayAdd(1);
+    return true;
+  }
+
   async function goNext(why) {
     if (!CFG.enabled || !CFG.autoNext || busy || captchaHint()) return;
     const n = nextNode();
     if (!n) { state.status = '已是最后一节'; return; }
     if (n.exam) { state.status = '下一节是考试，已停下：' + n.title; return; }
+    if (CFG.autoNextMode === 'prompt') {
+      state.status = '本节播完，点面板「进入下一节」继续';
+      log(state.status);
+      armed = false; lastAt = Date.now();
+      return;
+    }
+    if (!(await quotaGate())) { armed = false; lastAt = Date.now(); return; }
     busy = true; armed = false; lastAt = Date.now();
     const p = progress();
-    state.status = '播完（' + why + '）→ ' + (CFG.delay / 1000) + 's 后进入第 ' + (p.index + 1) + ' 节';
+    state.status = '播完（' + why + '）→ 停留片刻后进入第 ' + (p.index + 1) + ' 节';
     log(state.status);
-    await sleep(CFG.delay);
+    await sleep(randDelay());
     try { location.href = n.href; } catch (e) {
       const link = $('.detmain-navlist a[href*="nodeId=' + n.id + '"]');
       if (link) link.click();
@@ -229,6 +307,17 @@
       if (!CFG.enabled || !CFG.autoNext || !armed || busy || captchaHint()) return;
       const total = totalDuration();
       if (total && v.currentTime >= total - CFG.tail) goNext('尾段');
+    }, true);
+    let stuck = 0, lastPos = -1;
+    v.addEventListener('timeupdate', () => {
+      if (!CFG.stuckReload || !CFG.enabled) return;
+      if (Math.abs(v.currentTime - lastPos) < 0.05 && !v.paused) {
+        if (++stuck >= 6 && !captchaHint()) {
+          warn('播放位置长时间不动，刷新页面');
+          try { location.reload(); } catch (e) {}
+        }
+      } else { stuck = 0; }
+      lastPos = v.currentTime;
     }, true);
     v.addEventListener('ratechange', () => {
       if (!CFG.enabled) return;
@@ -273,7 +362,7 @@
     })(root);
     return out;
   }
-  const inOwnPanel = (el) => !!(el.closest && el.closest('#__cyber_panel__'));
+  const inOwnPanel = (el) => !!(el.closest && el.closest('#' + PID));
 
   // 平台验证码弹窗（layui）的固定特征
   const LAYER_SEL = '.layui-layer, .layui-layer-wrap, [class*="layui-layer"]';
@@ -539,7 +628,7 @@
       state.ocrErr = base + ' -> ' + (r.status || r.text);
     }
     state.ocrOk = false; state.ocrActive = '';
-    warn('OCR 服务未连接。启动：双击 ocr/start-ocr.bat，然后 __CYBER__.pingOcr() 重试');
+    warn('OCR 服务未连接。启动：双击 ocr/start-ocr.bat，然后 API.pingOcr() 重试');
     updatePanel();
     return false;
   }
@@ -611,31 +700,69 @@
   /* ==== 9. 手打兜底 ==== */
   function showManual(reason, b64) {
     state.status = '需手打验证码' + (reason ? '（' + reason + '）' : '');
-    const row = document.getElementById('__cyber_manual__');
+    const row = document.getElementById(MID);
     if (!row) return;
     row.style.display = 'block';
-    const prev = document.getElementById('__cyber_prev__');
+    const prev = document.getElementById(PREVID);
     if (prev) {
       if (b64) { prev.src = 'data:image/png;base64,' + b64; prev.style.display = 'block'; }
       else prev.style.display = 'none';
     }
-    const inp = document.getElementById('__cyber_min__');
+    const inp = document.getElementById(INID);
     if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
     updatePanel();
   }
   function hideManual() {
-    const row = document.getElementById('__cyber_manual__');
+    const row = document.getElementById(MID);
     if (row) row.style.display = 'none';
   }
   // 把验证码写进所有相关输入框（可见框 + 隐藏的 #yzCode），并触发平台监听
-  function fillAll(cap, code) {
-    try { fill(cap.input, code); } catch (e) {}
+  async function typeLikeHuman(inp, text) {
+    const a = Math.max(0, Number(CFG.typeMin) || 70);
+    const b = Math.max(a, Number(CFG.typeMax) || a + 120);
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const k = { key: ch, keyCode: ch.toUpperCase().charCodeAt(0), which: ch.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true };
+      try {
+        inp.dispatchEvent(new KeyboardEvent('keydown', k));
+        inp.dispatchEvent(new KeyboardEvent('keypress', k));
+        inp.value = text.slice(0, i + 1);
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.dispatchEvent(new KeyboardEvent('keyup', k));
+      } catch (e) {}
+      await sleep(a + Math.random() * (b - a));
+    }
+  }
+
+  async function fillAll(cap, code) {
+    const inp = cap.input;
     try {
+      if (CFG.humanFill && inp) {
+        // 先在输入框上走一遍鼠标事件：平台靠 mousedown 打标记，缺了就一眼是机器
+        const r = inp.getBoundingClientRect();
+        const o = { bubbles: true, cancelable: true, composed: true, view: window,
+          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
+        const P = window.PointerEvent || MouseEvent;
+        inp.dispatchEvent(new P('pointerdown', o));
+        inp.dispatchEvent(new MouseEvent('mousedown', o));
+        inp.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
+        inp.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
+        try { inp.focus(); } catch (e) {}
+        await typeLikeHuman(inp, code);           // 逐字符敲进去，而不是一次性赋值
+      } else {
+        fill(inp, code);
+      }
       const yz = document.getElementById('yzCode');
-      if (yz && yz !== cap.input) {
+      if (yz && yz !== inp) {
         yz.value = code;
         yz.dispatchEvent(new Event('input', { bubbles: true }));
         yz.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (CFG.humanFill && inp) {
+        const k = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+        inp.dispatchEvent(new KeyboardEvent('keydown', k));
+        inp.dispatchEvent(new KeyboardEvent('keypress', k));
+        inp.dispatchEvent(new KeyboardEvent('keyup', k));
       }
     } catch (e) {}
     return code;
@@ -691,7 +818,7 @@
   }
 
   async function submitManual() {
-    const inp = document.getElementById('__cyber_min__');
+    const inp = document.getElementById(INID);
     const code = (inp && inp.value || '').trim();
     const cap = findCaptcha();
     if (!cap || !code) return;
@@ -702,7 +829,7 @@
       showManual('图片已刷新，请重新输入', now);
       return;
     }
-    fillAll(cap, code);
+    await fillAll(cap, code);
     hideManual();
     state.status = '已提交手打验证码 ' + code + '，校验中…';
     const r = await submitCode(cap);
@@ -779,7 +906,7 @@
         错误: state.ocrErr || '-',
       });
 
-      fillAll(cap, ans);
+      await fillAll(cap, ans);
       await sleep(150);
       const r = await submitCode(cap);
       capAt = Date.now();
@@ -837,7 +964,7 @@
       if (CFG.solveCaptcha) {
         solveCaptcha();
         if (!capBusy && !findCaptcha() && state.status.indexOf('没定位到') < 0) {
-          state.status = '验证码出现了但没定位到输入框，执行 __CYBER__.capDebug() 看结构';
+          state.status = '验证码出现了但没定位到输入框，执行 API.capDebug() 看结构';
         }
       }
       return;
@@ -924,26 +1051,36 @@
     '#__cyber_panel__.cy-off .cy-sw:not(.cy-master){pointer-events:none!important}',
     '#__cyber_panel__ .cy-sw.cy-master{padding-top:8px!important;border-top:1px solid rgba(255,255,255,.07)!important;',
     'color:#e6e9ef!important;font-weight:600!important}',
-  ].join('');
+  ].join('').split('#__cyber_panel__').join('#' + PID).split('.cy-').join('.' + K + '-');
+
+  let panelTimer = null;
+  function startPanelLoop() {
+    if (panelTimer) return;
+    const run = function () {
+      try { updatePanel(); } catch (e) {}
+      panelTimer = setTimeout(run, 900 + Math.random() * 400);
+    };
+    panelTimer = setTimeout(run, 900);
+  }
 
   function injectCss() {
-    if (document.getElementById('__cyber_style__')) return;
+    if (document.getElementById(SID)) return;
     const st = document.createElement('style');
-    st.id = '__cyber_style__';
+    st.id = SID;
     st.textContent = CSS;
     (document.head || document.documentElement).appendChild(st);
   }
 
   function updatePanel() {
-    const box = document.getElementById('__cyber_panel__');
+    const box = document.getElementById(PID);
     if (!box) return;
     const v = player(), p = progress();
-    const dot = box.querySelector('.cy-dot');
-    const meta = box.querySelector('.cy-meta');
-    const bar = box.querySelector('.cy-bar > i');
-    const msg = box.querySelector('.cy-msg');
+    const dot = box.querySelector('.' + K + '-dot');
+    const meta = box.querySelector('.' + K + '-meta');
+    const bar = box.querySelector('.' + K + '-bar > i');
+    const msg = box.querySelector('.' + K + '-msg');
 
-    box.classList.toggle('cy-off', !CFG.enabled);
+    box.classList.toggle(K + '-off', !CFG.enabled);
     const mode = !CFG.enabled ? 'idle' : !v ? 'idle' : state.capOnScreen ? 'cap' : v.paused ? 'pause' : 'play';
     if (dot && dot.getAttribute('data-s') !== mode) dot.setAttribute('data-s', mode);
 
@@ -991,7 +1128,7 @@
   function makeDraggable(box, hd) {
     let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
     hd.addEventListener('pointerdown', (e) => {
-      if (e.target && e.target.classList && e.target.classList.contains('cy-fold')) return;
+      if (e.target && e.target.classList && e.target.classList.contains(K + '-fold')) return;
       const r = box.getBoundingClientRect();
       drag = true; sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
       box.style.right = 'auto'; box.style.bottom = 'auto';
@@ -1015,16 +1152,16 @@
 
   function mkSwitch(labelText, checked, onChange, cls, id) {
     const l = document.createElement('label');
-    l.className = 'cy-sw' + (cls ? ' ' + cls : '');
+    l.className = K + '-sw' + (cls ? ' ' + cls : '');
     const inp = document.createElement('input');
     inp.type = 'checkbox';
     if (id) inp.id = id;
     inp.checked = !!checked;
     inp.onchange = () => onChange(inp.checked);
     const tr = document.createElement('span');
-    tr.className = 'cy-track';
+    tr.className = K + '-track';
     const kn = document.createElement('i');
-    kn.className = 'cy-knob';
+    kn.className = K + '-knob';
     tr.appendChild(kn);
     const sp = document.createElement('span');
     sp.textContent = labelText;
@@ -1033,12 +1170,12 @@
   }
 
   function panel() {
-    if (document.getElementById('__cyber_panel__')) return;
+    if (document.getElementById(PID)) return;
     injectCss();
 
     const box = document.createElement('div');
-    box.id = '__cyber_panel__';
-    if (CFG.hidePanel) box.classList.add('cy-collapsed');
+    box.id = PID;
+    if (CFG.hidePanel) box.classList.add(K + '-collapsed');
     if (CFG.panelPos) {
       box.style.right = 'auto'; box.style.bottom = 'auto';
       box.style.left = Math.max(4, CFG.panelPos.left) + 'px';
@@ -1046,42 +1183,42 @@
     }
 
     const hd = document.createElement('div');
-    hd.className = 'cy-hd';
+    hd.className = K + '-hd';
     const dot = document.createElement('i');
-    dot.className = 'cy-dot';
+    dot.className = K + '-dot';
     dot.setAttribute('data-s', 'idle');
     const title = document.createElement('span');
-    title.className = 'cy-title';
+    title.className = K + '-title';
     title.textContent = '倍速';
     const fold = document.createElement('span');
-    fold.className = 'cy-fold';
+    fold.className = K + '-fold';
     fold.textContent = '▾';
     hd.append(dot, title, fold);
     fold.onclick = () => {
       CFG.hidePanel = !CFG.hidePanel; save();
-      box.classList.toggle('cy-collapsed', CFG.hidePanel);
+      box.classList.toggle(K + '-collapsed', CFG.hidePanel);
     };
 
     const body = document.createElement('div');
-    body.className = 'cy-body';
+    body.className = K + '-body';
 
     const meta = document.createElement('div');
-    meta.className = 'cy-meta';
+    meta.className = K + '-meta';
     const bar = document.createElement('div');
-    bar.className = 'cy-bar';
+    bar.className = K + '-bar';
     bar.appendChild(document.createElement('i'));
 
     const rates = document.createElement('div');
-    rates.className = 'cy-rates';
+    rates.className = K + '-rates';
     const setActive = (r) => {
-      rates.querySelectorAll('.cy-rate').forEach((b) => {
+      rates.querySelectorAll('.' + K + '-rate').forEach((b) => {
         b.setAttribute('data-on', Number(b.dataset.rate) === Number(r) ? '1' : '0');
       });
     };
     [1, 2, 4, 8].forEach((r) => {
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'cy-rate';
+      b.className = K + '-rate';
       b.dataset.rate = r;
       b.textContent = r + 'x';
       b.addEventListener('click', (e) => {
@@ -1096,44 +1233,43 @@
     });
     setActive(CFG.rate);
 
-    const master = mkSwitch('启用脚本', CFG.enabled, (on) => applyEnabled(on), 'cy-master', '__cyber_master__');
+    const master = mkSwitch('启用脚本', CFG.enabled, (on) => applyEnabled(on), K + '-master', MASTERID);
     const autoSw = mkSwitch('自动下一节', CFG.autoNext, (on) => { CFG.autoNext = on; save(); });
     const capSw = mkSwitch('自动识别验证码', CFG.solveCaptcha, (on) => {
       CFG.solveCaptcha = on; save();
       if (on) { capKey = ''; if (state.ocrOk !== true) pingOcr(); }
-    }, 'cy-capsw');
+    }, K + '-capsw');
 
     const manual = document.createElement('div');
-    manual.className = 'cy-manual';
-    manual.id = '__cyber_manual__';
+    manual.className = K + '-manual';
+    manual.id = MID;
     const prev = document.createElement('img');
-    prev.className = 'cy-prev';
-    prev.id = '__cyber_prev__';
+    prev.className = K + '-prev';
+    prev.id = PREVID;
     prev.onclick = () => { if (prev.src) window.open(prev.src); };
     const row = document.createElement('div');
-    row.className = 'cy-row';
+    row.className = K + '-row';
     const min = document.createElement('input');
-    min.className = 'cy-min';
-    min.id = '__cyber_min__';
+    min.className = K + '-min';
+    min.id = INID;
     min.placeholder = '手打验证码后回车';
     min.onkeydown = (e) => { if (e.key === 'Enter') submitManual(); };
     const ok = document.createElement('button');
     ok.type = 'button';
-    ok.className = 'cy-ok';
+    ok.className = K + '-ok';
     ok.textContent = '提交';
     ok.onclick = submitManual;
     row.append(min, ok);
     manual.append(prev, row);
 
     const msg = document.createElement('div');
-    msg.className = 'cy-msg';
+    msg.className = K + '-msg';
 
     body.append(meta, bar, rates, master, autoSw, capSw, manual, msg);
     box.append(hd, body);
     (document.body || document.documentElement).appendChild(box);
 
     try { makeDraggable(box, hd); } catch (e) {}
-    setInterval(updatePanel, 1000);
     updatePanel();
   }
 
@@ -1212,7 +1348,8 @@
     goNext, panel, selfTest, updatePanel, tick, applyEnabled,
     findCaptcha, captureB64, solveCaptcha, pingOcr, ocrTest, ocr, capDebug,
     showManual, submitManual, resume, refreshCaptcha,
-    setEnabled: (on) => { applyEnabled(on); const cb = document.getElementById('__cyber_master__'); if (cb) cb.checked = !!on; },
+    dayStat, quotaGate,
+    setEnabled: (on) => { applyEnabled(on); const cb = document.getElementById(MASTERID); if (cb) cb.checked = !!on; },
     setRate: (r) => {
       const n = Number(r) || 4;
       const b = document.querySelector('#__cyber_panel__ .cy-rate[data-rate="' + n + '"]');
@@ -1230,12 +1367,10 @@
     log('已启动 v' + VERSION + ' | 节点', currentNodeId() || '?', '|', p.index + '/' + p.total,
       '| 倍速', CFG.rate + 'x', '| 验证码', CFG.solveCaptcha ? '自动' : '手打');
     pingOcr();
-    setInterval(tick, 800);
-    setInterval(() => {
-      if (!CFG.enabled) return;
-      const v = player();
-      if (v && v.paused && CFG.autoPlay && !v.ended && !captchaHint()) v.play().catch(() => {});
-    }, 30000);
+    (function loopTick() { tick(); setTimeout(loopTick, 700 + Math.random() * 500); })();
+    (function loopResume() {
+      setTimeout(loopResume, 25000 + Math.random() * 20000);
+    })();
     tick();
     updatePanel();
   }
@@ -1243,6 +1378,6 @@
   try { boot(); API.ready = true; } catch (e) {
     state.bootError = e;
     API.errors.push('boot: ' + e.message);
-    console.error('%c[赛博代刷] 启动异常（__CYBER__.selfTest() 可用）', 'color:#ff6b6b;font-weight:600', e);
+    console.error('%c[赛博代刷] 启动异常（API.selfTest() 可用）', 'color:#ff6b6b;font-weight:600', e);
   }
 })();
