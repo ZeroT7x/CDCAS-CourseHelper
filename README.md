@@ -15,8 +15,8 @@
 | 命名空间 | `local.cdwl.cyber` |
 | 作者 / 版权 | 成都文理 · 赛博代刷 © 2025 |
 | 许可 | PolyForm Noncommercial 1.0.0（**禁止商用**，见 [LICENSE](LICENSE)） |
-| 版本 | 油猴版 `5.0` / Console 版 `5.0c` |
-| 全局接口 | `__CYBER__`（别名 `CYBER`） |
+| 版本 | 油猴版 `6.1` / Console 版 `6.1c` |
+| 调试接口 | 默认不暴露；`debug:true` 后以随机名（如 `_k3f9a2`）挂载 |
 | 配置键 | `localStorage['__CDWL_CYBER_CFG__']` |
 
 ---
@@ -25,10 +25,12 @@
 
 ```
 course-helper/
-├─ cdwl-cyber-helper.user.js      油猴脚本（v5.0，跨页存活，日常使用）
-├─ cdwl-cyber-helper.console.js   同功能 Console 版（v5.0c，不装油猴时用）
+├─ cdwl-cyber-helper.user.js      油猴脚本（v6.1，跨页存活，日常使用）
+├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.1c，不装油猴时用）
 ├─ README.md                      本文档
 ├─ LICENSE                        非商业许可 + 免责声明（全文）
+├─ _tools/
+│  └─ study-probe.console.js      进度上报抓包 / 直提探针（Console 版，默认 dry-run）
 └─ ocr/
    ├─ ddddocr_server.py           本地验证码识别服务（标准库 http.server + ddddocr）
    ├─ start-ocr.bat               Windows 一键启动（建 venv / 装依赖 / 起服务）
@@ -58,13 +60,13 @@ course-helper/
 控制台应打印：
 
 ```
-[赛博代刷] 注入 v5.0 | __CYBER__ 可用
+[赛博代刷] 注入 v6.1 | 已启动
 [赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。
-[赛博代刷] 已启动 v5.0 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
+[赛博代刷] 已启动 v6.1 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
 [赛博代刷] OCR 服务已连接： http://127.0.0.1:8899/ocr
 ```
 
-一键自检：`__CYBER__.selfTest()`。
+一键自检：`__DBG__.selfTest()`。
 
 ---
 
@@ -127,9 +129,9 @@ Get-NetTCPConnection -LocalPort 8899 -State Listen | ForEach-Object { Stop-Proce
 JSON.parse(localStorage.getItem('__CDWL_CYBER_CFG__'))
 
 // 改单项（示例：默认 8x、关闭静音）
-__CYBER__.cfg.rate = 8;
-__CYBER__.cfg.muted = false;
-localStorage.setItem('__CDWL_CYBER_CFG__', JSON.stringify(__CYBER__.cfg));
+__DBG__.cfg.rate = 8;
+__DBG__.cfg.muted = false;
+localStorage.setItem('__CDWL_CYBER_CFG__', JSON.stringify(__DBG__.cfg));
 
 // 重置全部
 localStorage.removeItem('__CDWL_CYBER_CFG__');
@@ -140,7 +142,7 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关，对应面板「启用脚本」 |
-| `rate` | `1` | 目标倍速，**默认 1x（不加速）**；`playbackRate` setter 会把低于它的值抬回。要加速请在面板点 2x/4x/8x，或 `__CYBER__.setRate(4)` |
+| `rate` | `1` | 目标倍速，**默认 1x（不加速）**；`playbackRate` setter 会把低于它的值抬回。要加速请在面板点 2x/4x/8x，或 `__DBG__.setRate(4)` |
 | `muted` | `true` | 自动静音 |
 | `autoPlay` | `true` | 暂停/卡顿/切后台后自动续播 |
 | `autoNext` | `true` | 播完自动进下一节 |
@@ -153,6 +155,15 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 | `ocrUrl` | `http://127.0.0.1:8899/ocr` | OCR 端点，换端口时改这里 |
 | `hidePanel` | `false` | 面板是否折叠 |
 | `panelPos` | `null` | 面板拖动后的坐标 `{left, top}` |
+| `debug` | `false` | true 时以随机名字暴露调试接口；默认不暴露 |
+| `autoNextMode` | `'auto'` | `auto`=自动跳节；`prompt`=只在提示，手动点才跳 |
+| `humanFill` | `true` | 填验证码前先派发 mousedown、提交前补 keypress(13)，抹平自动化差异 |
+| `delayMin` / `delayMax` | `15000` / `60000` | 播完到跳节的停留区间（随机），真人不会秒跳 |
+| `restEvery` | `4` | 每学 N 节休息一次，0=不休息 |
+| `restMin` / `restMax` | `300000` / `900000` | 休息时长区间（5–15 分钟，随机） |
+| `dailyMaxSections` | `0` | 单日自动学习节数上限，0=不限 |
+| `typeMin` / `typeMax` | `70` / `240` | 验证码逐字符键入间隔（ms） |
+| `stuckReload` | `true` | 播放位置长期不动（卡死）时自动刷新 |
 
 ---
 
@@ -204,9 +215,9 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `__CYBER__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **5.0**；只留一份脚本；Console 上下文选 `top` |
-| 面板出现但 `OCR 未连接` | 服务没起 / 端口不同 | 双击 `start-ocr.bat`；`__CYBER__.pingOcr()`；`__CYBER__.ocrTest()` 看原始返回 |
-| 识别出字但平台不认 | 模型认错字符 | `__CYBER__.capDebug()` 会打印要提交的那张图（放大 3 倍），据此调 `charset_range` |
+| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.1**；只留一份脚本；Console 上下文选 `top` |
+| 面板出现但 `OCR 未连接` | 服务没起 / 端口不同 | 双击 `start-ocr.bat`；`__DBG__.pingOcr()`；`__DBG__.ocrTest()` 看原始返回 |
+| 识别出字但平台不认 | 模型认错字符 | `__DBG__.capDebug()` 会打印要提交的那张图（放大 3 倍），据此调 `charset_range` |
 | 填了码没提交 | 按钮没绑上 | 控制台有 `[赛博代刷] 提交策略 xxx 弹窗仍在/已关闭`；六条全「仍在」请查 `layer.open({...})` 配置 |
 | 验证通过后仍暂停 | 残留隐藏弹窗被当成验证码 | 5.5 已修（只认可见弹窗 + 1.5s 防抖）；若仍出现看日志「暂停原因：页面上有可见的验证码弹窗」 |
 | 倍速点了不变色 | 页面按钮样式覆盖 | 已用注入样式表 + `data-on`，不受页面 CSS 影响 |
@@ -215,23 +226,34 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 ### 调试接口
 
+> **v6.0 起默认不挂全局接口**（固定名字 `__DBG__` / `CYBER` 本身就是最容易被页面脚本探测的指纹）。
+> 需要调试时：打开配置里的 `debug` 开关 → 刷新 → 控制台会打印本次的**随机接口名**（形如 `_k3f9a2`），
+> 下文所有 `__DBG__` 都替换成那个名字即可。
+>
+> ```js
+> const k = '__CDWL_CYBER_CFG__';
+> localStorage.setItem(k, JSON.stringify(Object.assign(JSON.parse(localStorage.getItem(k) || '{}'), { debug: true })));
+> location.reload();
+> ```
+
+
 ```js
-__CYBER__.version                 // "5.0"
-__CYBER__.selfTest()              // 表格：版本/节点/进度/倍速/验证码/OCR
-__CYBER__.capDebug()              // 验证码诊断：容器结构 + 定位结果 + 要提交的图 + OCR 文本
-__CYBER__.pingOcr()               // 重新探测 OCR 端点
-__CYBER__.ocrTest()               // 打 /health 与 /ocr，打印状态码与返回体
-__CYBER__.findCaptcha()           // 当前定位到的验证码 {type,input,img,box,btn}
-__CYBER__.captchaHint()           // 页面上是否有可见验证码
-__CYBER__.solveCaptcha()          // 立刻跑一次识别
-__CYBER__.showManual(__CYBER__.findCaptcha())  // 唤起手打面板
-__CYBER__.nextNode()              // 下一节 {id,href,title,exam?}
-__CYBER__.progress()              // {index,total}
-__CYBER__.goNext('手动')           // 立刻换节
-__CYBER__.setEnabled(false)       // 关总开关
-__CYBER__.setRate(8)              // 等价于点 8x
-__CYBER__.isBusy()                // 验证码流程是否在进行
-__CYBER__.status()                // 当前状态文案
+__DBG__.version                 // "5.0"
+__DBG__.selfTest()              // 表格：版本/节点/进度/倍速/验证码/OCR
+__DBG__.capDebug()              // 验证码诊断：容器结构 + 定位结果 + 要提交的图 + OCR 文本
+__DBG__.pingOcr()               // 重新探测 OCR 端点
+__DBG__.ocrTest()               // 打 /health 与 /ocr，打印状态码与返回体
+__DBG__.findCaptcha()           // 当前定位到的验证码 {type,input,img,box,btn}
+__DBG__.captchaHint()           // 页面上是否有可见验证码
+__DBG__.solveCaptcha()          // 立刻跑一次识别
+__DBG__.showManual(__DBG__.findCaptcha())  // 唤起手打面板
+__DBG__.nextNode()              // 下一节 {id,href,title,exam?}
+__DBG__.progress()              // {index,total}
+__DBG__.goNext('手动')           // 立刻换节
+__DBG__.setEnabled(false)       // 关总开关
+__DBG__.setRate(8)              // 等价于点 8x
+__DBG__.isBusy()                // 验证码流程是否在进行
+__DBG__.status()                // 当前状态文案
 ```
 
 ---
@@ -243,7 +265,78 @@ __CYBER__.status()                // 当前状态文案
 - **验证码可见性**：`shown()` 连祖先一起判 `display/visibility`，并排除 `opacity:0`，避免把隐藏占位/已关闭弹窗当成验证码。
 - **取图**：`data:` 直接切 base64；同源 `<img>` canvas 截屏；`<canvas>` 用 `toDataURL`；跨域污染才退回请求。
 - **防挂机**：覆盖 `document.hidden` / `visibilityState`，每 30 秒伪造一次鼠标键盘活动。
-- **命名规范**：全局接口 `__CYBER__` / `CYBER`；DOM `#__cyber_panel__`、`#__cyber_style__`、`data-cyber-ver`；CSS 类前缀 `cy-`；日志前缀 `[赛博代刷]`。
+- **命名规范**：全局接口 `__DBG__` / `CYBER`；DOM `#__cyber_panel__`、`#__cyber_style__`、`data-cyber-ver`；CSS 类前缀 `cy-`；日志前缀 `[赛博代刷]`。
+
+---
+
+## 8.4 类人化设计（社区经验 + 实测结论）
+
+一封毕业学长的邮件 + `iFulling/cdcasSK` 源码对照后确认，平台的判定不是单一阈值，而是多重特征叠加。本脚本按"越像人越好"整改：
+
+| 特征 | 平台怎么看 | 本脚本的做法 |
+|---|---|---|
+| 验证码填法 | 直接 `value = code` 一眼是机器；真人会先点输入框（触发 `mousedown`，平台据此打 `tw='_'`），再逐字符敲 | 鼠标事件序列 → `focus` → **逐字符键入**（70–240ms 随机）→ 补 `keypress(13)` |
+| 播完立刻跳下一节 | 秒跳 + 连续几小时，是典型的脚本节奏 | 播完随机停留 **15–60 秒** 才跳 |
+| 长时间不间断 | 人不会连学 3 小时不停 | 每 **4 节**休息 **5–15 分钟**；可设单日节数上限 |
+| 倍速 | 学时来自平台每秒 +1 的计数器，倍速不增加学时，只额外暴露跳变 | 默认 **1x**；社区项目 `cdcasSK` 同样把 `playbackRate` 写死 1.0 |
+| 固定 DOM / 全局变量 | 页面脚本一句 `if (window.__X__)` 就能判定外挂 | id / class 前缀每次加载随机；默认不挂任何全局变量 |
+| 伪造可见性 / 假鼠标事件 | `isTrusted=false` 可被直接识别 | 已全部移除（不再覆盖 `document.hidden`、不 dispatch 假 mouse 事件） |
+
+**能力边界**：浏览器里注入的任何事件 `isTrusted` 永远是 `false`，脚本无论如何都做不到"真事件"。要彻底可信只有两条路——真人在场点按，或用 Playwright / Puppeteer 通过 CDP 派发真实输入（`cdcasSK` 走的是"浏览器自动化"路线）。纯油猴脚本只能把时序、序列、节奏做到接近人类。
+
+## 8.5 进度上报协议（已逆向，源码 `/static/user/js/video.js`）
+
+> 结论先说：**请求没有隐藏**，就是一个明文表单 POST；而且**倍速对学时几乎无效**——学时来自平台自己的 1 秒计数器，与 `playbackRate` 无关。
+
+### 接口
+
+| 接口 | 时机 | 参数 | 返回 |
+|---|---|---|---|
+| `POST /user/node/study` | 播放中每 10s（支持 `sendBeacon` 时 30s）；play/pause/ended 时；`beforeunload` 时（`close=1`） | `nodeId`、`studyId`、`studyTime`、可选 `code`（验证码，取前 4 位 + `_`） | `{status, state, studyId, need_code}` |
+| `POST /service/sign` | 页面加载时**一次** | header `Authorization: sign`；body `appId/nonce/timestamp/nodeId/userId/studyId/studyTime` | 仅日志，无界面作用 |
+
+关键点：**进度接口本身不带签名**，签名只用于开头那次 `/service/sign`。
+
+### 计时机制（为什么 4x 没用）
+
+```js
+window.setInterval(function () {
+  if (playState == 'playing') { totalTime++; }   // 每 1 秒 +1，与播放倍速无关
+}, 1000);
+
+// 每 10/30 秒上报：studyTime = totalTime
+```
+
+- `totalTime` 是纯 JS 计数器，`playbackRate=4` 时**仍然每真实秒 +1**；
+- 上报只在 `totalTime > 上次已报值` 时才发（`if (totalTime <= studyTime) return`）；
+- 所以 4x 只是画面快进，学时按真实秒数累积 → 「倍速刷课学时不见涨」由此而来。
+
+### 服务端约束（客户端可见部分）
+
+| 字段 / 行为 | 含义 |
+|---|---|
+| `status: true` + `studyId` | 接受本次上报，并返回本次会话 `studyId`（下一条要带上） |
+| `need_code: 1` | 要求**图片验证码**（`/service/code` + `/service/code/aa`，4 位），提交时放进 `code` |
+| `need_code: 2` | 要求**点选验证码**（第三方 `captcha({clicks:3, ak:...})`，dunclick 接口） |
+| `state: 1` | 判定异常，客户端暂停并提示「网络课程出现问题」 |
+| 多窗口检测 | 每秒读 `localStorage['node_play_'+schoolId+userId]`，与本页 `nodeId` 不一致就弹窗并暂停 |
+| 拖动限制 | `studyState < 2` 时 `timeScheduleAdjust: 5`（只允许 ±5 秒微调） |
+| 鼠标轨迹 | 代码里有采集（`xlogs`），但上报语句被注释掉了 |
+
+### 能不能不播直接提交？
+
+能发，但**是否被接受取决于服务端对「节奏」的校验**，客户端代码看不到。验证方法（1 条请求即可判定）：
+
+```js
+// 抓包探针（_tools/study-probe.console.js）
+__STUDY__.step(30)         // dry-run：只打印将要发送的内容
+__STUDY__.step(30, true)   // 真发一条：把 studyTime 从当前值 +30
+```
+
+- 返回 `{"status":true,"studyId":...}` 且无 `need_code` → 服务端只按累计值记账，可以直接推进；
+- 返回 `need_code` / `state:1` → 服务端在校验节奏（真实秒数、请求间隔、会话指纹），一次性大批量会被拦。
+
+配套文件：`_tools/study-probe.console.js`（抓包 + 预演 + 连发，默认 dry-run）。
 
 ---
 
