@@ -284,62 +284,6 @@ __DBG__.status()                // 当前状态文案
 
 **能力边界**：浏览器里注入的任何事件 `isTrusted` 永远是 `false`，脚本无论如何都做不到"真事件"。要彻底可信只有两条路——真人在场点按，或用 Playwright / Puppeteer 通过 CDP 派发真实输入（`cdcasSK` 走的是"浏览器自动化"路线）。纯油猴脚本只能把时序、序列、节奏做到接近人类。
 
-## 8.5 进度上报协议（已逆向，源码 `/static/user/js/video.js`）
-
-> 结论先说：**请求没有隐藏**，就是一个明文表单 POST；而且**倍速对学时几乎无效**——学时来自平台自己的 1 秒计数器，与 `playbackRate` 无关。
-
-### 接口
-
-| 接口 | 时机 | 参数 | 返回 |
-|---|---|---|---|
-| `POST /user/node/study` | 播放中每 10s（支持 `sendBeacon` 时 30s）；play/pause/ended 时；`beforeunload` 时（`close=1`） | `nodeId`、`studyId`、`studyTime`、可选 `code`（验证码，取前 4 位 + `_`） | `{status, state, studyId, need_code}` |
-| `POST /service/sign` | 页面加载时**一次** | header `Authorization: sign`；body `appId/nonce/timestamp/nodeId/userId/studyId/studyTime` | 仅日志，无界面作用 |
-
-关键点：**进度接口本身不带签名**，签名只用于开头那次 `/service/sign`。
-
-### 计时机制（为什么 4x 没用）
-
-```js
-window.setInterval(function () {
-  if (playState == 'playing') { totalTime++; }   // 每 1 秒 +1，与播放倍速无关
-}, 1000);
-
-// 每 10/30 秒上报：studyTime = totalTime
-```
-
-- `totalTime` 是纯 JS 计数器，`playbackRate=4` 时**仍然每真实秒 +1**；
-- 上报只在 `totalTime > 上次已报值` 时才发（`if (totalTime <= studyTime) return`）；
-- 所以 4x 只是画面快进，学时按真实秒数累积 → 「倍速刷课学时不见涨」由此而来。
-
-### 服务端约束（客户端可见部分）
-
-| 字段 / 行为 | 含义 |
-|---|---|
-| `status: true` + `studyId` | 接受本次上报，并返回本次会话 `studyId`（下一条要带上） |
-| `need_code: 1` | 要求**图片验证码**（`/service/code` + `/service/code/aa`，4 位），提交时放进 `code` |
-| `need_code: 2` | 要求**点选验证码**（第三方 `captcha({clicks:3, ak:...})`，dunclick 接口） |
-| `state: 1` | 判定异常，客户端暂停并提示「网络课程出现问题」 |
-| 多窗口检测 | 每秒读 `localStorage['node_play_'+schoolId+userId]`，与本页 `nodeId` 不一致就弹窗并暂停 |
-| 拖动限制 | `studyState < 2` 时 `timeScheduleAdjust: 5`（只允许 ±5 秒微调） |
-| 鼠标轨迹 | 代码里有采集（`xlogs`），但上报语句被注释掉了 |
-
-### 能不能不播直接提交？
-
-能发，但**是否被接受取决于服务端对「节奏」的校验**，客户端代码看不到。验证方法（1 条请求即可判定）：
-
-```js
-// 抓包探针（_tools/study-probe.console.js）
-__STUDY__.step(30)         // dry-run：只打印将要发送的内容
-__STUDY__.step(30, true)   // 真发一条：把 studyTime 从当前值 +30
-```
-
-- 返回 `{"status":true,"studyId":...}` 且无 `need_code` → 服务端只按累计值记账，可以直接推进；
-- 返回 `need_code` / `state:1` → 服务端在校验节奏（真实秒数、请求间隔、会话指纹），一次性大批量会被拦。
-
-配套文件：`_tools/study-probe.console.js`（抓包 + 预演 + 连发，默认 dry-run）。
-
----
-
 ## 9. 版权、许可与免责声明
 
 ```
