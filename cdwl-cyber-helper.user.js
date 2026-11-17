@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         成都文理 · 赛博代刷助手
 // @namespace    local.cdwl.cyber
-// @version      6.1
+// @version      6.2
 // @description  在线课程辅助：自动播放/续播、强制倍速、播完自动下一节、验证码自动识别（ddddocr）
 // @author       成都文理 · 赛博代刷
 // @license      PolyForm-Noncommercial-1.0.0（禁止商用 / NonCommercial）
@@ -9,6 +9,8 @@
 // @match        http://cdcas.chaoxiankeji.com/*
 // @match        https://cdcas.duxingkej.com/*
 // @match        http://cdcas.duxingkej.com/*
+// @match        https://*.taiskeji.com/*
+// @match        http://*.taiskeji.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
@@ -35,11 +37,15 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.1';
+  const VERSION = '6.2';
   // 支持的站点（同平台多套部署）
-  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com'];
+  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'cdcass.taiskeji.com', 'cdcas.taiskeji.com'];
+  // 同族站点直接按后缀放行（泰诗科技等同类部署的子域都能用）
+  const HOST_SUFFIX = ['.taiskeji.com'];
 
-  if (HOSTS.indexOf(location.hostname) < 0) {
+  const hostOk = HOSTS.indexOf(location.hostname) >= 0 ||
+    HOST_SUFFIX.some((suf) => location.hostname.endsWith(suf));
+  if (!hostOk) {
     console.log('%c[赛博代刷] 非目标站点（' + location.hostname + '），跳过', 'color:#9aa0a6');
     return;
   }

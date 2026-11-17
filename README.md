@@ -6,6 +6,7 @@
 
 - `https://cdcas.chaoxiankeji.com/*`（超贤科技）
 - `https://cdcas.duxingkej.com/*`（成都文理学院实训平台 · 读行科技）
+- `https://cdcass.taiskeji.com/*`（泰诗科技，同族部署；`@match` 用通配，`*.taiskeji.com` 的子域都能用）
 
 `@match` 已限定这两个域名，脚本内部还有 hostname 白名单二次校验。
 
@@ -15,7 +16,7 @@
 | 命名空间 | `local.cdwl.cyber` |
 | 作者 / 版权 | 成都文理 · 赛博代刷 © 2025 |
 | 许可 | PolyForm Noncommercial 1.0.0（**禁止商用**，见 [LICENSE](LICENSE)） |
-| 版本 | 油猴版 `6.1` / Console 版 `6.1c` |
+| 版本 | 油猴版 `6.2` / Console 版 `6.2c` |
 | 调试接口 | 默认不暴露；`debug:true` 后以随机名（如 `_k3f9a2`）挂载 |
 | 配置键 | `localStorage['__CDWL_CYBER_CFG__']` |
 
@@ -25,8 +26,8 @@
 
 ```
 course-helper/
-├─ cdwl-cyber-helper.user.js      油猴脚本（v6.1，跨页存活，日常使用）
-├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.1c，不装油猴时用）
+├─ cdwl-cyber-helper.user.js      油猴脚本（v6.2，跨页存活，日常使用）
+├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.2c，不装油猴时用）
 ├─ README.md                      本文档
 ├─ LICENSE                        非商业许可 + 免责声明（全文）
 ├─ _tools/
@@ -60,9 +61,9 @@ course-helper/
 控制台应打印：
 
 ```
-[赛博代刷] 注入 v6.1 | 已启动
+[赛博代刷] 注入 v6.2 | 已启动
 [赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。
-[赛博代刷] 已启动 v6.1 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
+[赛博代刷] 已启动 v6.2 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
 [赛博代刷] OCR 服务已连接： http://127.0.0.1:8899/ocr
 ```
 
@@ -215,7 +216,7 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.1**；只留一份脚本；Console 上下文选 `top` |
+| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.2**；只留一份脚本；Console 上下文选 `top` |
 | 面板出现但 `OCR 未连接` | 服务没起 / 端口不同 | 双击 `start-ocr.bat`；`__DBG__.pingOcr()`；`__DBG__.ocrTest()` 看原始返回 |
 | 识别出字但平台不认 | 模型认错字符 | `__DBG__.capDebug()` 会打印要提交的那张图（放大 3 倍），据此调 `charset_range` |
 | 填了码没提交 | 按钮没绑上 | 控制台有 `[赛博代刷] 提交策略 xxx 弹窗仍在/已关闭`；六条全「仍在」请查 `layer.open({...})` 配置 |

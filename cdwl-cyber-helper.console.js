@@ -19,10 +19,14 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.1c';
-  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com'];
+  const VERSION = '6.2c';
+  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'cdcass.taiskeji.com', 'cdcas.taiskeji.com'];
+  // 同族站点直接按后缀放行（泰诗科技等同类部署的子域都能用）
+  const HOST_SUFFIX = ['.taiskeji.com'];
 
-  if (HOSTS.indexOf(location.hostname) < 0) {
+  const hostOk = HOSTS.indexOf(location.hostname) >= 0 ||
+    HOST_SUFFIX.some((suf) => location.hostname.endsWith(suf));
+  if (!hostOk) {
     console.log('%c[赛博代刷] 注意：当前不在支持站点列表（' + HOSTS.join(' / ') + '），功能照常尝试', 'color:#ffa94d');
   }
 
