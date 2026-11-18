@@ -19,7 +19,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '6.2c';
+  const VERSION = '6.7c';
   const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'cdcass.taiskeji.com', 'cdcas.taiskeji.com'];
   // 同族站点直接按后缀放行（泰诗科技等同类部署的子域都能用）
   const HOST_SUFFIX = ['.taiskeji.com'];
@@ -738,11 +738,52 @@
     }
   }
 
-  async function fillAll(cap, code) {
-    const inp = cap.input;
+  // 把一个值写进任意输入框（原生 setter，确保框架能感知）
+  function writeValue(el, text) {
     try {
-      if (CFG.humanFill && inp) {
-        // 先在输入框上走一遍鼠标事件：平台靠 mousedown 打标记，缺了就一眼是机器
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const d = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (d && d.set) d.set.call(el, text); else el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // 验证码层里所有"可能被平台读取"的文本框
+  function codeTargets(cap) {
+    const out = [];
+    const push = (el) => {
+      if (!el || out.indexOf(el) >= 0 || inOwnPanel(el)) return;
+      const t = (el.type || 'text').toLowerCase();
+      if (['hidden', 'checkbox', 'radio', 'submit', 'button', 'file', 'range', 'color'].includes(t)) return;
+      out.push(el);
+    };
+    const box = (cap.input && cap.input.closest && cap.input.closest('.layui-layer')) || cap.box || document;
+    push(cap.input);
+    try {
+      deepAll(box, 'input,textarea').forEach(push);      // 可见框、隐藏 #yzCode、其它兄弟框
+    } catch (e) {}
+    try {
+      for (const id of ['yzCode', 'code', 'vcode', 'captcha']) {
+        const el = document.getElementById(id);
+        if (el) push(el);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  async function fillAll(cap, code) {
+    const targets = codeTargets(cap);
+    if (!targets.length) {
+      warn('填值失败：在验证码层里没找到任何输入框');
+      return false;
+    }
+    const inp = cap.input && targets.indexOf(cap.input) >= 0 ? cap.input : targets[0];
+
+    try {
+      // 1) 主输入框：人类化——鼠标事件 + 逐字符键入
+      if (CFG.humanFill && visible(inp)) {
         const r = inp.getBoundingClientRect();
         const o = { bubbles: true, cancelable: true, composed: true, view: window,
           clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
@@ -752,28 +793,182 @@
         inp.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
         inp.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
         try { inp.focus(); } catch (e) {}
-        await typeLikeHuman(inp, code);           // 逐字符敲进去，而不是一次性赋值
+        await typeLikeHuman(inp, code);
       } else {
-        fill(inp, code);
+        writeValue(inp, code);
       }
-      const yz = document.getElementById('yzCode');
-      if (yz && yz !== inp) {
-        yz.value = code;
-        yz.dispatchEvent(new Event('input', { bubbles: true }));
-        yz.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // 2) 其余框（隐藏 #yzCode 等）直接写，平台可能从它们取值
+      let extra = 0;
+      for (const el of targets) {
+        if (el === inp) continue;
+        if (String(el.value || '') === code) continue;
+        if (writeValue(el, code)) extra++;
       }
-      if (CFG.humanFill && inp) {
-        const k = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-        inp.dispatchEvent(new KeyboardEvent('keydown', k));
-        inp.dispatchEvent(new KeyboardEvent('keypress', k));
-        inp.dispatchEvent(new KeyboardEvent('keyup', k));
+
+      // 3) 校验：至少一个框里真的有值，否则用原生 setter 再硬写一遍
+      const okNow = targets.some((el) => String(el.value || '').trim() === code);
+      if (!okNow) {
+        targets.forEach((el) => writeValue(el, code));
       }
-    } catch (e) {}
-    return code;
+      const filled = targets.filter((el) => String(el.value || '').trim() === code);
+      log('填值结果', {
+        目标: filled.map((el) => (el.id || el.name || el.type || el.tagName)),
+        值: code,
+        主框: (inp.id || inp.name || inp.tagName),
+        额外写入: extra,
+        成功: filled.length > 0,
+      });
+      if (!filled.length) warn('填值未生效：所有目标框仍为空，检查是否 readonly/被框架管控');
+      return filled.length > 0;
+    } catch (e) {
+      warn('填值异常', e);
+      return false;
+    }
   }
 
   // 提交：多策略连发，每一步都校验弹窗是否关闭，哪个成了记日志
-  async function submitCode(cap) {
+  // 关掉平台自己弹的提示框（请输入验证码 / 验证码错误 …）；只处理纯提示层，不碰验证码本体
+  function dismissNag() {
+    let n = 0;
+    try {
+      for (const lay of document.querySelectorAll('.layui-layer')) {
+        if (inOwnPanel(lay) || !shown(lay)) continue;
+        if (lay.querySelector('#codeImg, img[src*="/service/code"], input:not([type="hidden"])')) continue;
+        const txt = clean(lay.textContent || '');
+        if (!/请输入验证码|验证码错误|验证码不正确|请重新输入|网络课程出现问题/.test(txt)) continue;
+        const btn = lay.querySelector('.layui-layer-btn0') || lay.querySelector('.layui-layer-btn a');
+        if (btn) { clickIt(btn); n++; }
+      }
+    } catch (e) {}
+    if (n) log('已关闭平台提示框 ×' + n + '，继续处理验证码');
+    return n;
+  }
+
+  // 验证码层里所有"可能被平台读取"的文本框
+  function codeTargets(cap) {
+    const out = [];
+    const push = (el) => {
+      if (!el || out.indexOf(el) >= 0 || inOwnPanel(el)) return;
+      const t = (el.type || 'text').toLowerCase();
+      if (['hidden', 'checkbox', 'radio', 'submit', 'button', 'file', 'range', 'color'].includes(t)) return;
+      out.push(el);
+    };
+    const box = (cap && cap.input && cap.input.closest && cap.input.closest('.layui-layer')) || (cap && cap.box) || document;
+    if (cap && cap.input) push(cap.input);
+    try { deepAll(box, 'input,textarea').forEach(push); } catch (e) {}
+    try {
+      for (const id of ['yzCode', 'code', 'vcode', 'captcha']) {
+        const el = document.getElementById(id);
+        if (el) push(el);
+      }
+    } catch (e) {}
+    if (!out.length) { try { deepAll(document, 'input,textarea').forEach(push); } catch (e) {} }
+    return out;
+  }
+
+  // —— 目标框：一次解析，整轮复用（避免每次重新定位到不同元素） ——
+  function pickTargets(cap) {
+    const alive = (cap && Array.isArray(cap.targets)) ? cap.targets.filter((el) => el && el.isConnected !== false) : [];
+    if (alive.length) return alive;
+    const list = codeTargets(cap);
+    if (cap) cap.targets = list;
+    return list;
+  }
+
+  function anyValue(cap, code) {
+    return pickTargets(cap).some((el) => String(el.value || '').trim() === code);
+  }
+
+  const inputProto = (el) => (el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype);
+
+  // 三种写法依次尝试，每种写完立刻校验；返回 0/1/2=成功的写法，-1=全失败
+  function setVal(el, text) {
+    const tries = [
+      () => {
+        const d = Object.getOwnPropertyDescriptor(inputProto(el), 'value');
+        if (d && d.set) d.set.call(el, text); else el.value = text;
+      },
+      () => {
+        if (window.$ && typeof window.$ === 'function') window.$(el).val(text);
+        else el.value = text;
+      },
+      () => {
+        try { el.focus(); if (el.setSelectionRange) el.setSelectionRange(0, String(el.value || '').length); } catch (e) {}
+        try {
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, text);
+        } catch (e) {}
+        if (String(el.value || '') !== text) el.value = text;
+      },
+    ];
+    for (let i = 0; i < tries.length; i++) {
+      try { tries[i](); } catch (e) {}
+      try {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        if (window.$ && typeof window.$ === 'function') window.$(el).trigger('input').trigger('change');
+      } catch (e) {}
+      if (String(el.value || '') === text) return i;
+    }
+    return -1;
+  }
+
+  async function fillAll(cap, code) {
+    const targets = pickTargets(cap);
+    if (!targets.length) {
+      warn('填值失败：层里没找到任何输入框');
+      return false;
+    }
+    const primary = (cap.input && targets.indexOf(cap.input) >= 0 && visible(cap.input))
+      ? cap.input
+      : (targets.find((el) => visible(el)) || targets[0]);
+
+    const detail = [];
+    // 1) 主框：人类化（鼠标事件 + 逐字符）
+    if (CFG.humanFill && visible(primary)) {
+      try {
+        const r = primary.getBoundingClientRect();
+        const o = { bubbles: true, cancelable: true, composed: true, view: window,
+          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
+        const P = window.PointerEvent || MouseEvent;
+        primary.dispatchEvent(new P('pointerdown', o));
+        primary.dispatchEvent(new MouseEvent('mousedown', o));
+        primary.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
+        primary.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
+        try { primary.focus(); } catch (e) {}
+        await typeLikeHuman(primary, code);
+      } catch (e) {}
+    }
+
+    // 2) 全部框逐个写入并校验（主框若已成功，仍会再写一次，成本可忽略）
+    for (const el of targets) {
+      const before = String(el.value || '');
+      let used = String(before) === code ? 'had' : null;
+      if (used !== 'had') used = setVal(el, code);
+      detail.push({
+        框: el.id || el.name || el.type || el.tagName,
+        显示: visible(el) ? 'Y' : 'N',
+        写前: before,
+        写后: String(el.value || ''),
+        写法: used === 'had' ? '已有' : used,
+      });
+    }
+
+    const ok = targets.some((el) => String(el.value || '').trim() === code);
+    try { console.table(detail); } catch (e) {}
+    log('填值结果', { 成功: ok, 目标数: targets.length, 主框: primary.id || primary.tagName });
+    if (!ok) {
+      warn('三种写法都写不进去：可能是 readonly / 被框架接管 / 输入框在 iframe 内');
+      state.status = '识别成功但写不进输入框，转手打';
+      showManual('自动填写未生效', state.capB64);
+    }
+    return ok;
+  }
+
+  // 提交：确认框里有值 → 立刻点「开始播放」；点不动再走后备
+  async function submitCode(cap, code) {
+    code = code || String((pickTargets(cap)[0] || {}).value || '');
     const open = () => captchaHint();
     const pressEnter = (el) => {
       if (!el) return false;
@@ -788,32 +983,44 @@
 
     const strategies = [
       ['layer-btn0', () => {
-        const layer = (cap.input.closest && cap.input.closest('.layui-layer')) || document;
-        const btn = layer.querySelector('.layui-layer-btn0');
+        const layer = (cap.box && cap.box.querySelector) ? cap.box : document;
+        const btn = layer.querySelector('.layui-layer-btn0') || document.querySelector('.layui-layer-btn0');
         return clickIt(btn);
       }],
       ['cap.btn', () => clickIt(cap.btn)],
       ['findConfirm', () => clickIt(findConfirm(cap.box || document))],
       ['Enter', () => pressEnter(cap.input) || pressEnter(document.getElementById('yzCode'))],
       ['layer-btn-any', () => {
-        const btns = Array.from(document.querySelectorAll('.layui-layer .layui-layer-btn a, .layui-layer-btn a'))
-          .filter((el) => visible(el));
+        const btns = Array.from(document.querySelectorAll('.layui-layer .layui-layer-btn a, .layui-layer-btn a')).filter((el) => visible(el));
         const first = btns.find((el) => /开始播放|确定|确认|提交|验证|继续/.test(clean(el.textContent)));
         return clickIt(first || btns[0]);
       }],
       ['form-submit', () => {
-        const form = cap.input.form || (cap.input.closest && cap.input.closest('form'));
+        const form = cap.input && (cap.input.form || (cap.input.closest && cap.input.closest('form')));
         if (!form) return false;
         try { form.requestSubmit ? form.requestSubmit() : form.submit(); return true; } catch (e) { return false; }
       }],
     ];
 
     for (const [name, fn] of strategies) {
+      dismissNag();
       if (!open()) return { ok: true, by: name + '（已经关闭）' };
+
+      // 点之前确认框里有值；没有就先补写，补不进去就别点（空点会弹「请输入验证码」）
+      if (!anyValue(cap, code)) {
+        const okFill = await fillAll(cap, code);
+        await sleep(150);
+        if (!okFill && !anyValue(cap, code)) {
+          log('输入框仍为空，暂不提交：' + name);
+          await sleep(300);
+          continue;
+        }
+      }
+
       let did = false;
       try { did = !!fn(); } catch (e) { did = false; }
       if (!did) { log('提交策略', name, '不可用'); continue; }
-      await sleep(800);
+      await sleep(700);
       const still = open();
       log('提交策略', name, still ? '弹窗仍在' : '弹窗已关闭 ✓');
       if (!still) return { ok: true, by: name };
@@ -833,7 +1040,8 @@
       showManual('图片已刷新，请重新输入', now);
       return;
     }
-    await fillAll(cap, code);
+    const filled = await fillAll(cap, code);
+    if (!filled) { warn('手打的值也没写进输入框'); return; }
     hideManual();
     state.status = '已提交手打验证码 ' + code + '，校验中…';
     const r = await submitCode(cap);
@@ -910,7 +1118,13 @@
         错误: state.ocrErr || '-',
       });
 
-      await fillAll(cap, ans);
+      const filled = await fillAll(cap, ans);
+      if (!filled) {
+        state.status = '验证码识别成功但没写进输入框，转手打';
+        warn(state.status);
+        showManual('自动填写未生效', state.capB64);
+        return;
+      }
       await sleep(150);
       const r = await submitCode(cap);
       capAt = Date.now();
@@ -954,6 +1168,14 @@
     const v = player();
     if (!v) return;
     watchPlayer(v);
+
+    // 先收拾平台弹的提示框：验证码阶段出现时，关掉后要马上重新填
+    const nagCount = dismissNag();
+    if (nagCount > 0) {
+      capKey = '';                 // 允许同一张图立即重试
+      capAt = 0;
+      state.status = '已关闭平台提示框，重新输入验证码…';
+    }
 
     const capOn = captchaHint() && (Date.now() - (state.capPassAt || 0) > 1500);
     state.capOnScreen = capOn;

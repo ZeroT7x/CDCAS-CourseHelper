@@ -16,7 +16,7 @@
 | 命名空间 | `local.cdwl.cyber` |
 | 作者 / 版权 | 成都文理 · 赛博代刷 © 2025 |
 | 许可 | PolyForm Noncommercial 1.0.0（**禁止商用**，见 [LICENSE](LICENSE)） |
-| 版本 | 油猴版 `6.2` / Console 版 `6.2c` |
+| 版本 | 油猴版 `6.7` / Console 版 `6.7c` |
 | 调试接口 | 默认不暴露；`debug:true` 后以随机名（如 `_k3f9a2`）挂载 |
 | 配置键 | `localStorage['__CDWL_CYBER_CFG__']` |
 
@@ -26,8 +26,8 @@
 
 ```
 course-helper/
-├─ cdwl-cyber-helper.user.js      油猴脚本（v6.2，跨页存活，日常使用）
-├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.2c，不装油猴时用）
+├─ cdwl-cyber-helper.user.js      油猴脚本（v6.7，跨页存活，日常使用）
+├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.7c，不装油猴时用）
 ├─ README.md                      本文档
 ├─ LICENSE                        非商业许可 + 免责声明（全文）
 ├─ _tools/
@@ -61,9 +61,9 @@ course-helper/
 控制台应打印：
 
 ```
-[赛博代刷] 注入 v6.2 | 已启动
+[赛博代刷] 注入 v6.7 | 已启动
 [赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。
-[赛博代刷] 已启动 v6.2 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
+[赛博代刷] 已启动 v6.7 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
 [赛博代刷] OCR 服务已连接： http://127.0.0.1:8899/ocr
 ```
 
@@ -166,8 +166,6 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 | `typeMin` / `typeMax` | `70` / `240` | 验证码逐字符键入间隔（ms） |
 | `stuckReload` | `true` | 播放位置长期不动（卡死）时自动刷新 |
 
----
-
 ## 5. 面板
 
 ```
@@ -212,11 +210,55 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 ---
 
+### 6.2 识别成功但没写进输入框
+
+现象：日志有「OCR文本: 7Kq3」，但验证码框还是空的，随后点提交触发「请输入验证码」。
+
+原因：平台的验证码层里往往不止一个 input——可见框、`display:none` 的 `#yzCode`、甚至一个 offscreen 的 `#code`。脚本之前只写自己定位到的那一个，如果平台恰好从另一个取值，就等于没填。
+
+修复（v6.6）：
+
+- `codeTargets()` 收集**层内所有文本输入框** + `#yzCode / #code / #vcode / #captcha`；
+- 主框走人类化逐字符键入，其余框用原生 setter 写入（派发 input/change）；
+- 写完 `filled` 校验：至少一个框里的值等于识别结果，否则再硬写一遍；
+- 打印 `填值结果 {目标, 值, 主框, 额外写入, 成功}`，一看就知道写进了哪几个框；
+- 仍然写不进去 → 状态转「转手打」，绝不空点提交。
+
+**v6.7 再修**：如果页面的 value 赋值会被框架吞掉（写完还是空），`setVal()` 会依次尝试三种写法并逐步校验：
+
+1. `HTMLInputElement.prototype` 的原生 setter + `input`/`change` 事件；
+2. 页面自带的 `jQuery：$(el).val(code).trigger("input")`（平台自己就是用 jQuery 取值）；
+3. `focus()` + `selectAll` + `document.execCommand("insertText", code)`（真正的输入路径，框架最难拦）。
+
+三者任一成功即继续；确认任一目标框的值等于识别结果后，`submitCode()` 立刻点 `.layui-layer-btn0`（「开始播放」），失败才走 Enter / form 后备。目标框在整轮内只解析一次（`pickTargets()`），避免每次重新定位到不同输入框。
+
+### 6.1 平台多弹「请输入验证码」
+
+现象：脚本填完码后，平台额外弹一个 layui dialog，内容是「请输入验证码」。
+
+原因有两层：
+
+1. **空值点击**——按钮被点下去的那一刻，输入框里还没有值（平台 `sendCode()` 读到空就直接 `layer.alert("请输入验证码")`）；
+2. **重复提交**——平台在输入框 `keypress(13)` 上也会提交并清空输入框，脚本先前既发 Enter 又点按钮，第二次就读到了空值。
+
+修复（v6.3）：
+
+- fillAll() 只负责填值，**不再发 Enter**；
+- 提交只走一条路径：.layui-layer-btn0 → cap.btn → findConfirm → Enter（仅在前几步都无效时才用）；
+- 每次尝试前 ensureCode()：输入框被平台清空就重新键入；
+- dismissNag()：出现「请输入验证码 / 验证码错误 / 验证码不正确 / 请重新输入」的 dialog，自动点「确定」关掉。
+
+**v6.4 修正位置**：dismissNag() 之前放在验证码分支之后，验证码在场时 tick 提前 return，永远轮不到它。现在挪到 tick 最前面，且关掉提示框后会重置 `capKey` / `capAt`，让同一张图**立即重新填入并提交**；`dismissNag()` 只处理"纯提示层"（层内没有验证码图片、没有可见输入框），不会误关验证码本体。
+**v6.5 根因修正**：真正触发提示框的是「输入框还是空的就点了开始播放」——平台重开验证码时输入框是新的，脚本手里还捏着旧引用，于是点的是新弹窗的按钮、填的是旧弹窗的框。现在每次提交前 `ensureCode()` 都会重新 `findCaptcha()` 定位，`codeReady()` 确认框内确有内容才允许点击；没有就重填、跳过这次点击。
+
+
+---
+
 ## 7. 排错
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.2**；只留一份脚本；Console 上下文选 `top` |
+| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.7**；只留一份脚本；Console 上下文选 `top` |
 | 面板出现但 `OCR 未连接` | 服务没起 / 端口不同 | 双击 `start-ocr.bat`；`__DBG__.pingOcr()`；`__DBG__.ocrTest()` 看原始返回 |
 | 识别出字但平台不认 | 模型认错字符 | `__DBG__.capDebug()` 会打印要提交的那张图（放大 3 倍），据此调 `charset_range` |
 | 填了码没提交 | 按钮没绑上 | 控制台有 `[赛博代刷] 提交策略 xxx 弹窗仍在/已关闭`；六条全「仍在」请查 `layer.open({...})` 配置 |
