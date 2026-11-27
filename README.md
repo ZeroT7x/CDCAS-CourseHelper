@@ -1,12 +1,12 @@
 # 成都文理 · 赛博代刷助手
 
-在线课程辅助工具：**自动播放 / 续播 · 强制倍速 · 播完自动下一节 · 验证码自动识别（ddddocr）**。
+在线课程辅助工具：**自动播放 / 续播 · 播完自动下一节 · 验证码自动识别（ddddocr）· 拟人化操作节奏**。
 
-适用站点（同平台两套部署，脚本自动适配）：
+适用站点（同平台三套部署，脚本自动适配）：
 
 - `https://cdcas.chaoxiankeji.com/*`（超贤科技）
 - `https://cdcas.duxingkej.com/*`（成都文理学院实训平台 · 读行科技）
-- `https://cdcass.taiskeji.com/*`（泰诗科技，同族部署；`@match` 用通配，`*.taiskeji.com` 的子域都能用）
+- `https://cdcass.taiskeji.com/*`（泰诗科技，同族部署；`@match` 精确匹配该域名）
 
 `@match` 已限定这些域名，脚本内部还有 hostname 白名单二次校验。
 
@@ -34,7 +34,7 @@
 | 命名空间 | `local.cdwl.cyber` |
 | 作者 / 版权 | 成都文理 · 赛博代刷 © 2025 |
 | 许可 | PolyForm Noncommercial 1.0.0（**禁止商用**，见 [LICENSE](LICENSE)） |
-| 版本 | 油猴版 `6.7` / Console 版 `6.7c` |
+| 版本 | 油猴版 `7.0` / Console 版 `7.0c` |
 | 调试接口 | 默认不暴露；`debug:true` 后以随机名（如 `_k3f9a2`）挂载 |
 | 配置键 | `localStorage['__CDWL_CYBER_CFG__']` |
 
@@ -44,8 +44,8 @@
 
 ```
 course-helper/
-├─ cdwl-cyber-helper.user.js      油猴脚本（v6.7，跨页存活，日常使用）
-├─ cdwl-cyber-helper.console.js   同功能 Console 版（v6.7c，不装油猴时用）
+├─ cdwl-cyber-helper.user.js      油猴脚本（v7.0，跨页存活，日常使用）
+├─ cdwl-cyber-helper.console.js   同功能 Console 版（v7.0c，不装油猴时用）
 ├─ README.md                      本文档
 ├─ 安全使用建议.md                 封号复盘 + 推荐配置（只开自动下一节，验证码手打）
 ├─ LICENSE                        非商业许可 + 免责声明（全文）
@@ -80,13 +80,13 @@ course-helper/
 控制台应打印：
 
 ```
-[赛博代刷] 注入 v6.7 | 已启动
+[赛博代刷] 注入 v7.0 | 已启动
 [赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。
-[赛博代刷] 已启动 v6.7 | 节点 1765885 | 2/40 | 倍速 1x | 验证码 自动
+[赛博代刷] 已启动 v7.0 | 节点 1765885 | 2/40 | 验证码 自动 | 倍速 1
 [赛博代刷] OCR 服务已连接： http://127.0.0.1:8899/ocr
 ```
 
-一键自检：`__DBG__.selfTest()`。
+自检：配置里打开 `debug` 后，用控制台打印的随机接口名执行 `selfTest()`（见 7 节「调试接口」）。
 
 ---
 
@@ -135,9 +135,8 @@ Get-NetTCPConnection -LocalPort 8899 -State Listen | ForEach-Object { Stop-Proce
 
 | 控件 | 作用 |
 |---|---|
-| `1x 2x 4x 8x` | 倍速，当前值绿底高亮 |
-| 启用脚本 | **总开关**。关闭后：倍速回 1x、取消静音、不自动播放、不跳节、不处理验证码；面板变灰 |
-| 自动下一节 | 播完是否进入目录里的下一节（考试节点默认停） |
+| 启用脚本 | **总开关**。关闭后：取消静音、不自动播放、不跳节、不处理验证码；面板变灰 |
+| 自动下一节 | 播完是否进入目录里的下一节（考试节点默认停；跳转前随机等 1–3 秒） |
 | 自动识别验证码 | 验证码出现时自动识别并提交。**建议关闭**：作者两个号都因这一项被封，室友只开自动下一节、手打验证码则一直正常（详见 [安全使用建议.md](安全使用建议.md)） |
 
 ### 4.2 配置文件（localStorage）
@@ -148,8 +147,7 @@ Get-NetTCPConnection -LocalPort 8899 -State Listen | ForEach-Object { Stop-Proce
 // 查看
 JSON.parse(localStorage.getItem('__CDWL_CYBER_CFG__'))
 
-// 改单项（示例：默认 8x、关闭静音）
-__DBG__.cfg.rate = 8;
+// 改单项（示例：关闭静音）
 __DBG__.cfg.muted = false;
 localStorage.setItem('__CDWL_CYBER_CFG__', JSON.stringify(__DBG__.cfg));
 
@@ -162,12 +160,10 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 总开关，对应面板「启用脚本」 |
-| `rate` | `1` | 目标倍速，**默认 1x（不加速）**；`playbackRate` setter 会把低于它的值抬回。要加速请在面板点 2x/4x/8x，或 `__DBG__.setRate(4)` |
 | `muted` | `true` | 自动静音 |
-| `autoPlay` | `true` | 暂停/卡顿/切后台后自动续播 |
-| `autoNext` | `true` | 播完自动进下一节 |
+| `autoPlay` | `true` | 暂停/卡顿/切后台后自动续播（页面加载后先随机等 1.5–5 秒再起播） |
+| `autoNext` | `true` | 播完自动进下一节（跳转前随机等 1–3 秒，给进度上报留时间） |
 | `skipExam` | `true` | 标题含「考试/测试/测验」的节点不自动进入 |
-| `delay` | `2000` | 播完后等待毫秒数再跳（给进度上报留时间） |
 | `tail` | `1.5` | 距结尾多少秒算「播完」 |
 | `solveCaptcha` | `true` | 验证码自动识别，对应面板开关 |
 | `capCaseTry` | `true` | 大小写轮换重试（原样→小写→大写→首字母大写） |
@@ -175,23 +171,15 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 | `ocrUrl` | `http://127.0.0.1:8899/ocr` | OCR 端点，换端口时改这里 |
 | `hidePanel` | `false` | 面板是否折叠 |
 | `panelPos` | `null` | 面板拖动后的坐标 `{left, top}` |
+| `playbackRate` | `1` | 播放速率。面板没有倍速按钮，要改只能改这里（取值 0.25–4） |
 | `debug` | `false` | true 时以随机名字暴露调试接口；默认不暴露 |
-| `autoNextMode` | `'auto'` | `auto`=自动跳节；`prompt`=只在提示，手动点才跳 |
-| `humanFill` | `true` | 填验证码前先派发 mousedown、提交前补 keypress(13)，抹平自动化差异 |
-| `delayMin` / `delayMax` | `15000` / `60000` | 播完到跳节的停留区间（随机），真人不会秒跳 |
-| `restEvery` | `4` | 每学 N 节休息一次，0=不休息 |
-| `restMin` / `restMax` | `300000` / `900000` | 休息时长区间（5–15 分钟，随机） |
-| `dailyMaxSections` | `0` | 单日自动学习节数上限，0=不限 |
-| `typeMin` / `typeMax` | `70` / `240` | 验证码逐字符键入间隔（ms） |
-| `stuckReload` | `true` | 播放位置长期不动（卡死）时自动刷新 |
 
 ## 5. 面板
 
 ```
-● 倍速                      ▾
-第 5/40 节 · 4x · 03:21/12:18
+● 赛博助手                  ▾
+第 5/40 节 · 03:21/12:18
 ━━━━━━━━━━━━━━──────────
-[ 1x ][ 2x ][ 4x ][ 8x ]
 ───────────────
 ⬤ 启用脚本
 ⬤ 自动下一节
@@ -211,8 +199,8 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 1. 检测到**可见的**验证码弹窗（`#video-captcha` 有内容，或可见的 `.layui-layer` 内含 `/service/code` 图片）
 2. 立即 `pause()`，状态显示「验证码出现，已暂停播放，识别后自动继续」
 3. canvas 截取**屏幕上那张图**的像素（不重新请求 URL，避免平台换图）
-4. ddddocr 识别 → 同时写入可见输入框与隐藏的 `#yzCode`
-5. 依次尝试提交：`.layui-layer-btn0` → `cap.btn` → `findConfirm` → **回车** → 任意按钮 → `form.submit`，每步校验弹窗是否关闭
+4. ddddocr 识别 → 先随机等约 3 秒（加约 1 秒抖动）再**逐字符人工式键入**可见输入框（每键带随机停顿，约 12% 概率先打错一字 → Backspace 修正），同时直写隐藏的 `#yzCode`
+5. 依次尝试提交：`.layui-layer-btn0` → `cap.btn` → `findConfirm` → **回车** → 任意按钮 → `form.submit`，每步校验弹窗是否关闭（按钮点击带鼠标移动轨迹 + 矩形内随机落点）
 6. 弹窗消失 → 自动 `play()` 续播；未通过 → 换大小写 / 换图重试（3 轮）→ 仍失败展开手打行
 
 已适配的平台弹窗结构：
@@ -229,66 +217,21 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 ---
 
-### 6.2 识别成功但没写进输入框
-
-现象：日志有「OCR文本: 7Kq3」，但验证码框还是空的，随后点提交触发「请输入验证码」。
-
-原因：平台的验证码层里往往不止一个 input——可见框、`display:none` 的 `#yzCode`、甚至一个 offscreen 的 `#code`。脚本之前只写自己定位到的那一个，如果平台恰好从另一个取值，就等于没填。
-
-修复（v6.6）：
-
-- `codeTargets()` 收集**层内所有文本输入框** + `#yzCode / #code / #vcode / #captcha`；
-- 主框走人类化逐字符键入，其余框用原生 setter 写入（派发 input/change）；
-- 写完 `filled` 校验：至少一个框里的值等于识别结果，否则再硬写一遍；
-- 打印 `填值结果 {目标, 值, 主框, 额外写入, 成功}`，一看就知道写进了哪几个框；
-- 仍然写不进去 → 状态转「转手打」，绝不空点提交。
-
-**v6.7 再修**：如果页面的 value 赋值会被框架吞掉（写完还是空），`setVal()` 会依次尝试三种写法并逐步校验：
-
-1. `HTMLInputElement.prototype` 的原生 setter + `input`/`change` 事件；
-2. 页面自带的 `jQuery：$(el).val(code).trigger("input")`（平台自己就是用 jQuery 取值）；
-3. `focus()` + `selectAll` + `document.execCommand("insertText", code)`（真正的输入路径，框架最难拦）。
-
-三者任一成功即继续；确认任一目标框的值等于识别结果后，`submitCode()` 立刻点 `.layui-layer-btn0`（「开始播放」），失败才走 Enter / form 后备。目标框在整轮内只解析一次（`pickTargets()`），避免每次重新定位到不同输入框。
-
-### 6.1 平台多弹「请输入验证码」
-
-现象：脚本填完码后，平台额外弹一个 layui dialog，内容是「请输入验证码」。
-
-原因有两层：
-
-1. **空值点击**——按钮被点下去的那一刻，输入框里还没有值（平台 `sendCode()` 读到空就直接 `layer.alert("请输入验证码")`）；
-2. **重复提交**——平台在输入框 `keypress(13)` 上也会提交并清空输入框，脚本先前既发 Enter 又点按钮，第二次就读到了空值。
-
-修复（v6.3）：
-
-- fillAll() 只负责填值，**不再发 Enter**；
-- 提交只走一条路径：.layui-layer-btn0 → cap.btn → findConfirm → Enter（仅在前几步都无效时才用）；
-- 每次尝试前 ensureCode()：输入框被平台清空就重新键入；
-- dismissNag()：出现「请输入验证码 / 验证码错误 / 验证码不正确 / 请重新输入」的 dialog，自动点「确定」关掉。
-
-**v6.4 修正位置**：dismissNag() 之前放在验证码分支之后，验证码在场时 tick 提前 return，永远轮不到它。现在挪到 tick 最前面，且关掉提示框后会重置 `capKey` / `capAt`，让同一张图**立即重新填入并提交**；`dismissNag()` 只处理"纯提示层"（层内没有验证码图片、没有可见输入框），不会误关验证码本体。
-**v6.5 根因修正**：真正触发提示框的是「输入框还是空的就点了开始播放」——平台重开验证码时输入框是新的，脚本手里还捏着旧引用，于是点的是新弹窗的按钮、填的是旧弹窗的框。现在每次提交前 `ensureCode()` 都会重新 `findCaptcha()` 定位，`codeReady()` 确认框内确有内容才允许点击；没有就重填、跳过这次点击。
-
-
----
-
 ## 7. 排错
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `__DBG__ is not defined` | 脚本没注入当前页 | Tampermonkey 图标该页应为 1；版本必须 **6.7**；只留一份脚本；Console 上下文选 `top` |
+| `__DBG__ is not defined` | 脚本没注入当前页，或没开 `debug` | Tampermonkey 图标该页应为 1；版本必须 **7.0**；只留一份脚本；Console 上下文选 `top`；调试接口需先开 `debug`（见下） |
 | 面板出现但 `OCR 未连接` | 服务没起 / 端口不同 | 双击 `start-ocr.bat`；`__DBG__.pingOcr()`；`__DBG__.ocrTest()` 看原始返回 |
 | 识别出字但平台不认 | 模型认错字符 | `__DBG__.capDebug()` 会打印要提交的那张图（放大 3 倍），据此调 `charset_range` |
 | 填了码没提交 | 按钮没绑上 | 控制台有 `[赛博代刷] 提交策略 xxx 弹窗仍在/已关闭`；六条全「仍在」请查 `layer.open({...})` 配置 |
 | 验证通过后仍暂停 | 残留隐藏弹窗被当成验证码 | 5.5 已修（只认可见弹窗 + 1.5s 防抖）；若仍出现看日志「暂停原因：页面上有可见的验证码弹窗」 |
-| 倍速点了不变色 | 页面按钮样式覆盖 | 已用注入样式表 + `data-on`，不受页面 CSS 影响 |
-| 后台学时不见涨 | 平台按服务端真实时长累加 | 倍速降到 2x/1x；或按抓到的上报接口补 `studyTime` |
+| 后台学时不见涨 | 平台按服务端真实时长累加 | 已按 1x 正常速率播放；或按抓到的上报接口补 `studyTime` |
 | 跳节后脚本失效 | 用的是 Console 版 | Console 版整页跳转会丢，重新粘贴；要跨页请用油猴版 |
 
 ### 调试接口
 
-> **v6.0 起默认不挂全局接口**（固定名字 `__DBG__` / `CYBER` 本身就是最容易被页面脚本探测的指纹）。
+> **v6.0 起默认不挂全局接口**（固定名字本身就是最容易被页面脚本探测的指纹）。7.0 延续这一做法。
 > 需要调试时：打开配置里的 `debug` 开关 → 刷新 → 控制台会打印本次的**随机接口名**（形如 `_k3f9a2`），
 > 下文所有 `__DBG__` 都替换成那个名字即可。
 >
@@ -300,8 +243,8 @@ localStorage.removeItem('__CDWL_CYBER_CFG__');
 
 
 ```js
-__DBG__.version                 // "5.0"
-__DBG__.selfTest()              // 表格：版本/节点/进度/倍速/验证码/OCR
+__DBG__.version                 // "7.0"
+__DBG__.selfTest()              // 表格：版本/节点/进度/验证码/OCR
 __DBG__.capDebug()              // 验证码诊断：容器结构 + 定位结果 + 要提交的图 + OCR 文本
 __DBG__.pingOcr()               // 重新探测 OCR 端点
 __DBG__.ocrTest()               // 打 /health 与 /ocr，打印状态码与返回体
@@ -313,7 +256,6 @@ __DBG__.nextNode()              // 下一节 {id,href,title,exam?}
 __DBG__.progress()              // {index,total}
 __DBG__.goNext('手动')           // 立刻换节
 __DBG__.setEnabled(false)       // 关总开关
-__DBG__.setRate(8)              // 等价于点 8x
 __DBG__.isBusy()                // 验证码流程是否在进行
 __DBG__.status()                // 当前状态文案
 ```
@@ -322,12 +264,14 @@ __DBG__.status()                // 当前状态文案
 
 ## 8. 机制说明（便于二次修改）
 
-- **倍速**：改写 `HTMLMediaElement.prototype.playbackRate` setter，低于 `CFG.rate` 的赋值一律抬回，`ratechange` 再兜一次；总开关关闭时原样透传。
-- **自动下一节**：`ended` + `timeupdate` 尾段双触发 → 等 `delay` → `location.href = 下一节.href`。目录来自 `.detmain-navlist a[href*="/user/node"]`，`javascript:void(0)` 的分组标题自动排除。
+- **自动下一节**：`ended` + `timeupdate` 尾段双触发 → 随机等 1–3 秒 → `location.href = 下一节.href`。目录来自 `.detmain-navlist a[href*="/user/node"]`，`javascript:void(0)` 的分组标题自动排除。
 - **验证码可见性**：`shown()` 连祖先一起判 `display/visibility`，并排除 `opacity:0`，避免把隐藏占位/已关闭弹窗当成验证码。
 - **取图**：`data:` 直接切 base64；同源 `<img>` canvas 截屏；`<canvas>` 用 `toDataURL`；跨域污染才退回请求。
-- **防挂机**：覆盖 `document.hidden` / `visibilityState`，每 30 秒伪造一次鼠标键盘活动。
-- **命名规范**：全局接口 `__DBG__` / `CYBER`；DOM `#__cyber_panel__`、`#__cyber_style__`、`data-cyber-ver`；CSS 类前缀 `cy-`；日志前缀 `[赛博代刷]`。
+- **人工式键入**：把验证码当作字符流逐键派发 keydown/keypress/keyup（值渐进写入），键前/键间停顿随机抖动；约 12% 概率先打错一字 → Backspace 修正。
+- **真人式点击**：从当前鼠标位置沿带随机弯曲的轨迹派发 mousemove 移到目标附近，落点在按钮矩形内随机取（非正中心），按下/抬起时长随机抖动。
+- **拟人操作（humanPulse）**：每 15–45 秒随机做一件「小事」——小幅滚动屏幕（1-3 段）/ 鼠标漫游 / 空白处点击 / 走神暂停 2-6 秒再续播 / 发呆不动；另每 30–90 秒随机派发一次导航键心跳；验证码出现后先等约 3 秒（±1 秒抖动）再输入。
+- **可见性与可信标记**：不覆盖 `isTrusted`、`document.hidden`、`visibilityState`（原生取值器被替换本身就是指纹）；页面加载后随机等 1.5–5 秒再开始自动播放。
+- **命名规范**：默认不挂全局接口（`debug:true` 时用随机名）；DOM id / class 前缀每次加载随机生成；日志前缀 `[赛博代刷]`。
 
 ---
 
@@ -337,12 +281,12 @@ __DBG__.status()                // 当前状态文案
 
 | 特征 | 平台怎么看 | 本脚本的做法 |
 |---|---|---|
-| 验证码填法 | 直接 `value = code` 一眼是机器；真人会先点输入框（触发 `mousedown`，平台据此打 `tw='_'`），再逐字符敲 | 鼠标事件序列 → `focus` → **逐字符键入**（70–240ms 随机）→ 补 `keypress(13)` |
-| 播完立刻跳下一节 | 秒跳 + 连续几小时，是典型的脚本节奏 | 播完随机停留 **15–60 秒** 才跳 |
-| 长时间不间断 | 人不会连学 3 小时不停 | 每 **4 节**休息 **5–15 分钟**；可设单日节数上限 |
-| 倍速 | 学时来自平台每秒 +1 的计数器，倍速不增加学时，只额外暴露跳变 | 默认 **1x**；社区项目 `cdcasSK` 同样把 `playbackRate` 写死 1.0 |
+| 验证码填法 | 直接 `value = code` 一眼是机器；真人会先点输入框（触发 `mousedown`，平台据此打 `tw='_'`），再逐字符敲 | 鼠标事件序列 → `focus` → **完整键盘事件链逐字符键入**（keydown/keypress/input/keyup，间隔随机抖动）→ 约 12% 概率先打错一字再 Backspace 修正 → 核对停顿 → 带轨迹点击提交 |
+| 播完立刻跳下一节 | 秒跳 + 连续几小时，是典型的脚本节奏 | 播完随机停留 **1–3 秒** 才跳 |
+| 长时间不间断 | 人不会连学 3 小时不停 | **humanPulse**：每 15–45 秒做一件小事（小幅滚动 / 鼠标漫游 / 空白处点击 / 走神暂停 2–6 秒 / 发呆）。v6.x 的「每 4 节休息 5–15 分钟」和单日节数上限在 7.0 中**未保留**，需要的话请自己控制使用节奏 |
+| 倍速 | 学时来自平台每秒 +1 的计数器，倍速不增加学时，只额外暴露跳变 | 面板去掉倍速按钮，固定按配置 `playbackRate`（默认 **1**）播放 |
 | 固定 DOM / 全局变量 | 页面脚本一句 `if (window.__X__)` 就能判定外挂 | id / class 前缀每次加载随机；默认不挂任何全局变量 |
-| 伪造可见性 / 假鼠标事件 | `isTrusted=false` 可被直接识别 | 已全部移除（不再覆盖 `document.hidden`、不 dispatch 假 mouse 事件） |
+| 伪造可见性 / 覆写 `isTrusted` | 原生取值器被 JS 函数替换，读一下原型描述符就能发现 | 已全部移除（不覆盖 `document.hidden`、`visibilityState`、`Event.prototype.isTrusted`）。注意：提交按钮的点击、鼠标漫游等仍是合成事件，见下方「能力边界」 |
 
 **能力边界**：浏览器里注入的任何事件 `isTrusted` 永远是 `false`，脚本无论如何都做不到"真事件"。要彻底可信只有两条路——真人在场点按，或用 Playwright / Puppeteer 通过 CDP 派发真实输入（`cdcasSK` 走的是"浏览器自动化"路线）。纯油猴脚本只能把时序、序列、节奏做到接近人类。
 
