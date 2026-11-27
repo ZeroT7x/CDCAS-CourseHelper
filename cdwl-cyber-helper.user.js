@@ -9,10 +9,13 @@
 // @match        http://cdcas.chaoxiankeji.com/*
 // @match        https://cdcas.duxingkej.com/*
 // @match        http://cdcas.duxingkej.com/*
-// @match        https://cdcass.taiskeji.com/*
-// @match        http://cdcass.taiskeji.com/*
+// @match        https://*.taiskeji.com/*
+// @match        http://*.taiskeji.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      127.0.0.1
 // @connect      localhost
 // ==/UserScript==
@@ -42,10 +45,11 @@
   const K = 'c' + Math.random().toString(36).slice(2, 8);
   const ID = { panel: K + '_panel', style: K + '_style', manual: K + '_manual', prev: K + '_prev', min: K + '_min', master: K + '_master' };
   const TITLE = '赛博助手';
-  // 支持的站点（同平台多套部署）
-  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com','cdcass.taiskeji.com'];
+  // 支持的站点（同平台多套部署）；不带子域的域名同时匹配它的所有子域名
+  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'taiskeji.com'];
+  const isSupportedHost = () => HOSTS.some((h) => location.hostname === h || location.hostname.endsWith('.' + h));
 
-  if (HOSTS.indexOf(location.hostname) < 0) {
+  if (!isSupportedHost()) {
     console.log('%c[赛博代刷] 非目标站点（' + location.hostname + '），跳过', 'color:#9aa0a6');
     return;
   }
@@ -59,7 +63,7 @@
     }
   } catch (e) {}
 
-  /* ==== 0. 接口优先 ==== */
+  /* ==== 1. 接口优先 ==== */
   const API = { version: VERSION, ready: false, errors: [] };
   const DBG_NAME = '_' + Math.random().toString(36).slice(2, 8);
   try { console.log('%c[赛博代刷] 注入 v' + VERSION, 'color:#28c76f;font-weight:700', '| 已启动'); } catch (e) {}
@@ -67,8 +71,12 @@
     console.log('%c[赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。', 'color:#9aa0a6');
   } catch (e) {}
 
-  /* ==== 1. 配置 ==== */
+  /* ==== 2. 配置 ==== */
   const KEY = '__CDWL_CYBER_CFG__';
+  // 配置优先存油猴的脚本存储（页面脚本连 localStorage 的键都枚举不到）；
+  // 没有 GM 存储（Console 版）时退回 localStorage。
+  const LEGACY_KEY = '__CX_PLAY_CFG__';
+  const gmStore = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   const DEFAULT = {
     enabled: true,
     muted: true,
@@ -89,7 +97,7 @@
   // 调试接口：默认不挂任何全局变量；配置 debug:true 时才用随机名字挂到 window
   function exposeApi() {
     if (!CFG.debug) {
-      try { console.log('%c[赛博代刷] 调试接口未开启（配置里 debug:true 后刷新）', 'color:#9aa0a6'); } catch (e) {}
+      try { console.log('%c[赛博代刷] 调试接口未开启（开启方式见 README「调试接口」）', 'color:#9aa0a6'); } catch (e) {}
       return;
     }
     try {
@@ -98,7 +106,12 @@
     } catch (e) {}
   }
   exposeApi();
-  const dbg = () => (CFG.debug ? DBG_NAME : '调试接口');
+  // 油猴菜单里的开关：配置存在脚本存储里，页面上没有别的入口能改 debug
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('开 / 关调试接口（刷新后生效）', () => { CFG.debug = !CFG.debug; save(); });
+    }
+  } catch (e) {}
   function normalizeConfig(cfg) {
     const bool = (v, fallback) => (typeof v === 'boolean' ? v : v == null ? fallback : !/^(false|0|no|off)$/i.test(String(v)));
     const num = (v, min, max, fallback) => {
@@ -119,19 +132,34 @@
   }
   function load() {
     try {
+      if (gmStore) {
+        const cur = GM_getValue(KEY, '');
+        if (typeof cur === 'string' && cur) return JSON.parse(cur) || {};
+        for (const k of [KEY, LEGACY_KEY]) {
+          const legacy = localStorage.getItem(k);
+          if (!legacy) continue;
+          localStorage.removeItem(k);
+          GM_setValue(KEY, legacy);
+          return JSON.parse(legacy) || {};
+        }
+        return {};
+      }
       const cur = localStorage.getItem(KEY);
       if (cur) return JSON.parse(cur) || {};
-      const legacy = localStorage.getItem('__CX_PLAY_CFG__');   // 旧版本配置自动迁移
+      const legacy = localStorage.getItem(LEGACY_KEY);
       if (legacy) {
-        const v = JSON.parse(legacy) || {};
-        localStorage.setItem(KEY, JSON.stringify(v));
-        localStorage.removeItem('__CX_PLAY_CFG__');
-        return v;
+        localStorage.setItem(KEY, legacy);
+        localStorage.removeItem(LEGACY_KEY);
       }
-      return {};
+      return legacy ? JSON.parse(legacy) || {} : {};
     } catch (e) { return {}; }
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(CFG)); } catch (e) {} }
+  function save() {
+    try {
+      if (gmStore) GM_setValue(KEY, JSON.stringify(CFG));
+      else localStorage.setItem(KEY, JSON.stringify(CFG));
+    } catch (e) {}
+  }
 
   const log = (...a) => console.log('%c[赛博代刷]', 'color:#28c76f;font-weight:600', ...a);
   const warn = (...a) => console.warn('%c[赛博代刷]', 'color:#ffa94d;font-weight:600', ...a);
@@ -313,9 +341,10 @@
     return false;
   }
 
+  const watched = new WeakSet();   // 记录已接管的 <video>，不给页面元素挂自定义属性
   function watchPlayer(v) {
-    if (v.__cxw__) return;
-    v.__cxw__ = true;
+    if (watched.has(v)) return;
+    watched.add(v);
     v.addEventListener('ended', () => goNext('ended'), true);
     let tailTryAt = 0;
     v.addEventListener('timeupdate', () => {
@@ -346,6 +375,11 @@
   }
   // 连同祖先一起判可见：隐藏的容器里，子元素本身可能仍算出非零尺寸
   function shown(el) {
+    if (!el) return false;
+    // checkVisibility 一次判完元素及其祖先的 display / visibility / opacity
+    if (typeof el.checkVisibility === 'function') {
+      try { return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && visible(el); } catch (e) {}
+    }
     let n = el;
     while (n && n.nodeType === 1) {
       try {
@@ -693,7 +727,8 @@
       state.ocrErr = base + ' -> ' + (r.status || r.text);
     }
     state.ocrOk = false; state.ocrActive = '';
-    warn('OCR 服务未连接。启动：双击 ocr/start-ocr.bat，然后 ' + dbg() + '.pingOcr() 重试');
+    log('本地 OCR 服务未连接（可选组件），验证码将展开手打框。启用方法见 README「验证码兜底」'
+      + (CFG.debug ? '；启动服务后执行 ' + DBG_NAME + '.pingOcr() 重试' : ''));
     updatePanel();
     return false;
   }
@@ -981,7 +1016,8 @@
   // ---- 8.2 填值 ----
   async function fill(input, val) {
     if (!input) return;
-    try { input.focus(); } catch (e) {}
+    // 真人是先用鼠标点一下输入框（pointerdown / mousedown → 聚焦 → click），不是凭空 focus()
+    if (!(await clickIt(input))) { try { input.focus({ preventScroll: true }); } catch (e) {} }
     await sleep(rand(40, 120));
 
     // 清空已有内容：逐个 Backspace，走完整 beforeinput/input 链
@@ -995,7 +1031,7 @@
     const text = String(val || '');
     for (const ch of text) {
       // 偶发手滑：先打错一个字符 → 停顿 → Backspace 修正（每次填码最多 2 次）
-      if (typos < 2 && ch !== ' ' && Math.random() < 0.12) {
+      if (typos < 2 && ch !== ' ' && Math.random() < 0.05) {
         typos++;
         const pool = 'abcdefghjkmnpqrstuvwxyz23456789';
         const wrong = pool[Math.floor(rand(0, pool.length))];
@@ -1010,10 +1046,7 @@
       else await typeImeChar(input, ch);
       await sleep(rand(70, 320));
     }
-
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(rand(30, 80));
-    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    typedInputs.add(input);
   }
 
   // ---- 8.3 指针事件链 ----
@@ -1056,10 +1089,66 @@
     return ev;
   }
 
+  function mkMouseMove(x, y, mx, my) {
+    return new MouseEvent('mousemove', {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      movementX: mx, movementY: my, button: -1, buttons: 0,
+    });
+  }
+
+  function commonAncestor(a, b) {
+    for (let n = a; n; n = n.parentElement) if (n === b || n.contains(b)) return n;
+    return null;
+  }
+
+  // 指针换目标时的 hover 事件链，顺序同浏览器：out / leave（旧目标）→ over / enter（新目标）
+  function dispatchHover(from, to, x, y) {
+    const init = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true, button: -1, buttons: 0,
+    };
+    const stop = from && to ? commonAncestor(from, to) : null;
+    const local = Object.assign({}, init, { bubbles: false, relatedTarget: null });
+    if (from) {
+      const out = Object.assign({}, init, { relatedTarget: to });
+      from.dispatchEvent(new PE('pointerout', out));
+      from.dispatchEvent(new MouseEvent('mouseout', out));
+      for (let n = from; n && n !== stop; n = n.parentElement) {
+        n.dispatchEvent(new PE('pointerleave', local));
+        n.dispatchEvent(new MouseEvent('mouseleave', local));
+      }
+    }
+    if (to) {
+      const over = Object.assign({}, init, { relatedTarget: from });
+      to.dispatchEvent(new PE('pointerover', over));
+      to.dispatchEvent(new MouseEvent('mouseover', over));
+      const chain = [];
+      for (let n = to; n && n !== stop; n = n.parentElement) chain.push(n);
+      for (let i = chain.length - 1; i >= 0; i--) {
+        chain[i].dispatchEvent(new PE('pointerenter', local));
+        chain[i].dispatchEvent(new MouseEvent('mouseenter', local));
+      }
+    }
+  }
+
   function dispatchPointerMove(ev) {
-    let target = null;
-    try { target = document.elementFromPoint(ev.clientX, ev.clientY); } catch (e) {}
+    const at = (e) => {
+      try { return document.elementFromPoint(e.clientX, e.clientY); } catch (err) {}
+      return null;
+    };
+    // 真实鼠标每个采样点都有 mousemove，最后一个采样点再跟一个 pointermove
+    let samples = [];
+    try { samples = ev.getCoalescedEvents() || []; } catch (e) {}
+    for (const c of samples) {
+      try { (at(c) || document).dispatchEvent(mkMouseMove(c.clientX, c.clientY, c.movementX, c.movementY)); } catch (e) {}
+    }
+    const target = at(ev);
+    const prev = lastPointerTarget;
+    if (prev !== target && (!prev || prev.isConnected)) dispatchHover(prev, target, ev.clientX, ev.clientY);
     (target || document).dispatchEvent(ev);
+    (target || document).dispatchEvent(mkMouseMove(ev.clientX, ev.clientY, ev.movementX, ev.movementY));
     lastPointerTarget = target;
   }
 
@@ -1107,28 +1196,13 @@
       // 1) 带轨迹移动到落点
       await movePointerTo(tx, ty);
 
-      // 2) 进入元素：over / enter（仅在目标变化时）
-      if (lastPointerTarget !== el) {
-        const overInit = {
-          bubbles: true, cancelable: true, composed: true, view: window,
-          clientX: tx, clientY: ty, screenX: tx, screenY: ty,
-          pointerId: 1, pointerType: 'mouse', isPrimary: true,
-          button: -1, buttons: 0, relatedTarget: lastPointerTarget || null,
-        };
-        el.dispatchEvent(new PE('pointerover', overInit));
-        el.dispatchEvent(new PE('pointerenter', Object.assign({}, overInit, { bubbles: false })));
-        el.dispatchEvent(new MouseEvent('mouseover', overInit));
-        el.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, overInit, { bubbles: false })));
-        lastPointerTarget = el;
-        await sleep(rand(40, 120));
-      }
-
-      // 3) 落点附近的最后一次微移动（保证 pointerdown 前有 pointermove）
+      // 2) 落点附近的最后一次微移动（pointermove + mousemove，保证 pointerdown 前有移动）
       const jx = Math.round(tx + rand(-2, 2)), jy = Math.round(ty + rand(-2, 2));
       el.dispatchEvent(makePointerMove(jx, jy, jx - tx, jy - ty));
+      el.dispatchEvent(mkMouseMove(jx, jy, jx - tx, jy - ty));
       await sleep(rand(20, 60));
 
-      // 4) pointerdown → mousedown
+      // 3) pointerdown → mousedown
       const downInit = {
         bubbles: true, cancelable: true, composed: true, view: window,
         clientX: jx, clientY: jy, screenX: jx, screenY: jy,
@@ -1137,19 +1211,59 @@
       };
       el.dispatchEvent(new PE('pointerdown', downInit));
       el.dispatchEvent(new MouseEvent('mousedown', downInit));
+      // mousedown 的默认行为是转移焦点：上一个聚焦元素（如验证码输入框）会按真实顺序
+      // 收到 change → blur → focusout，按钮收到 focus → focusin
+      transferFocus(el);
       await sleep(rand(45, 150));
 
-      // 5) pointerup → mouseup
+      // 4) pointerup → mouseup
       const upInit = Object.assign({}, downInit, { buttons: 0 });
       el.dispatchEvent(new PE('pointerup', upInit));
       el.dispatchEvent(new MouseEvent('mouseup', upInit));
       await sleep(rand(10, 40));
       if (el.isConnected === false || el.disabled) return false;
 
-      // 6) click：用原生 click 保留默认行为（表单提交 / 导航等）
+      // 5) click：用原生 click 保留默认行为（表单提交 / 导航等）
       el.click();
       return true;
     } catch (e) { return false; }
+  }
+
+  const typedInputs = new WeakSet();   // 被脚本逐字键入过的输入框：失焦时才补 change
+
+  // 焦点转移交给浏览器原生执行；页面没有系统焦点时（后台窗口 / 失活的标签页）浏览器不派发
+  // 聚焦与失焦事件，这里把没触发的按真实顺序补上，保证任何状态下事件序列都一致且不重复。
+  function transferFocus(el) {
+    const prev = document.activeElement;
+    if (!el || !prev || prev === el || prev.nodeType !== 1) return;
+    const seen = {};
+    const on = (e) => { seen[e.type] = true; };
+    const onPrev = ['change', 'blur', 'focusout'], onEl = ['focus', 'focusin'];
+    onPrev.forEach((t) => prev.addEventListener(t, on));
+    onEl.forEach((t) => el.addEventListener(t, on));
+    try { el.focus({ preventScroll: true }); } catch (e) {}
+    // 点在不可聚焦的元素上：真实行为是焦点回到 body
+    const toBody = document.activeElement === prev;
+    if (toBody) { try { prev.blur(); } catch (e) {} }
+    onPrev.forEach((t) => prev.removeEventListener(t, on));
+    onEl.forEach((t) => el.removeEventListener(t, on));
+
+    if (prev !== document.body && prev !== document.documentElement) {
+      if (/^(INPUT|TEXTAREA)$/.test(prev.tagName) && typedInputs.has(prev) && !seen.change) {
+        prev.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (!seen.blur) prev.dispatchEvent(new FocusEvent('blur', { composed: true, view: window }));
+      if (!seen.focusout) {
+        prev.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, view: window, relatedTarget: toBody ? null : el }));
+      }
+    }
+    typedInputs.delete(prev);
+    if (!toBody) {
+      if (!seen.focus) el.dispatchEvent(new FocusEvent('focus', { composed: true, view: window }));
+      if (!seen.focusin) {
+        el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true, view: window, relatedTarget: prev }));
+      }
+    }
   }
 
   async function refreshCaptcha(box) {
@@ -1285,22 +1399,32 @@
       return !!(layer && cap.input && layer.contains(cap.input));
     };
 
+    // 同一个按钮只点一次：服务端校验稍慢就连点同一个按钮，是最扎眼的异常
+    const clicked = new Set();
+    const clickOnce = async (btn) => {
+      if (!btn) return false;
+      if (clicked.has(btn)) return 'dup';
+      const ok = await clickIt(btn);
+      if (ok) clicked.add(btn);
+      return ok;
+    };
+
     const strategies = [
       ['layer-btn0', async () => {
         const layer = cap.input && cap.input.closest && cap.input.closest('.layui-layer');
         if (!layer) return false;
         const btn = layer.querySelector('.layui-layer-btn0');
         if (!isButtonSafe(btn) || !inCapBox(btn)) return false;
-        return await clickIt(btn);
+        return await clickOnce(btn);
       }],
       ['cap.btn', async () => {
         if (!isButtonSafe(cap.btn, /^(确定|确认|提交|验证|继续|开始播放|继续播放|开始学习|进入学习|播放|OK)$/)) return false;
-        return await clickIt(cap.btn);
+        return await clickOnce(cap.btn);
       }],
       ['findConfirm', async () => {
         const btn = findConfirm(cap.box || document);
         if (!isButtonSafe(btn)) return false;
-        return await clickIt(btn);
+        return await clickOnce(btn);
       }],
       ['Enter', async () => {
         const t = cap.input || document.getElementById('yzCode');
@@ -1315,7 +1439,7 @@
           .filter((el) => visible(el) && inCapBox(el));
         const first = btns.find((el) => /开始播放|确定|确认|提交|验证|继续/.test(clean(el.textContent)));
         if (!first) return false;
-        return await clickIt(first);
+        return await clickOnce(first);
       }],
       ['form-submit', () => {
         const form = cap.input.form || (cap.input.closest && cap.input.closest('form'));
@@ -1329,9 +1453,11 @@
       if (guard && !guard()) return { ok: false, by: 'cancelled' };
       if (!open()) return { ok: true, by: name + '（已经关闭）' };
       let did = false;
-      try { did = !!(await fn()); } catch (e) { did = false; }
+      try { did = await fn(); } catch (e) { did = false; }
+      if (did === 'dup') { log('提交策略', name, '与前面是同一个按钮，跳过'); continue; }
       if (!did) { log('提交策略', name, '不可用'); continue; }
-      const closed = await waitCaptchaClosed(1800);
+      // 校验接口慢的时候别急着换下一种提交方式，多等一会儿
+      const closed = await waitCaptchaClosed(4000);
       log('提交策略', name, closed ? '弹窗已关闭 ✓' : '弹窗仍在');
       if (closed) return { ok: true, by: name };
     }
@@ -1598,7 +1724,7 @@
       }
       if (capManual) return;
       if (!cap) {
-        state.status = '验证码出现了但没定位到输入框，执行 ' + dbg() + '.capDebug() 看结构';
+        state.status = '验证码出现了但没定位到输入框' + (CFG.debug ? '，执行 ' + DBG_NAME + '.capDebug() 看结构' : '');
         return;
       }
       if (!capBusy) solveCaptcha(cap);
@@ -1625,10 +1751,26 @@
     if (!armed && !busy && Date.now() - lastAt > 3000) armed = true;
   }
 
-  /* ==== 11.5 拟人操作 ==== */
+  /* ==== 12. 拟人操作 ==== */
   let simBreak = false;                        // 拟人"走神"暂停中，tick 暂不自动续播
   const bootAt = Date.now();                   // 页面加载时间
   const bootDelay = rand(1500, 5000);          // 加载后随机 1.5-5 秒再开始自动播放
+
+  // 找一个点了不会有事的屏幕位置：落点是布局容器，它自己和祖先都不是可交互元素
+  const BLANK_TAG = /^(DIV|SECTION|MAIN|ARTICLE|ASIDE|HEADER|FOOTER|NAV)$/;
+  function blankPoint() {
+    for (let i = 0; i < 6; i++) {
+      const x = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
+      const y = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
+      const el = document.elementFromPoint(x, y);
+      if (!el || !BLANK_TAG.test(el.tagName) || el.isContentEditable || inOwnPanel(el)) continue;
+      if (el.closest('a,button,input,textarea,select,video,iframe,label,[contenteditable="true"],[role="button"],[onclick]')) continue;
+      if (/btn|button|link|item|row|tab|menu|close|play|cap/i.test(String(el.className || ''))) continue;
+      try { if ((el.ownerDocument.defaultView || window).getComputedStyle(el).cursor === 'pointer') continue; } catch (e) {}
+      return { x, y, el };
+    }
+    return null;
+  }
 
   // 以随机时间间隔做一件"人味"小事：小幅滚动 / 鼠标漫游 / 空白处点击 / 短暂走神暂停 / 发呆不动。
   function humanPulse() {
@@ -1662,21 +1804,23 @@
               await sleep(rand(200, 700));
             }
           } else if (dice < 0.90) {
-            // 页面空白处点一下鼠标（target 是 body，不会误触链接/按钮）
-            const x = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
-            const y = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
-            await movePointerTo(x, y);
-            const o = { bubbles: true, cancelable: true, composed: true, view: window,
-              clientX: x, clientY: y, screenX: x, screenY: y,
-              pointerId: 1, pointerType: 'mouse', isPrimary: true,
-              button: 0, buttons: 1 };
-            document.body.dispatchEvent(new PE('pointerdown', o));
-            document.body.dispatchEvent(new MouseEvent('mousedown', o));
-            await sleep(rand(40, 140));
-            const o2 = Object.assign({}, o, { buttons: 0 });
-            document.body.dispatchEvent(new PE('pointerup', o2));
-            document.body.dispatchEvent(new MouseEvent('mouseup', o2));
-            document.body.dispatchEvent(new MouseEvent('click', o2));
+            // 页面空白处点一下鼠标：只点确认过不是链接 / 按钮 / 播放器的容器，
+            // 事件发给落点上真正的元素（真实点击命中的就是它）
+            const p = blankPoint();
+            if (p) {
+              await movePointerTo(p.x, p.y);
+              const o = { bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
+                pointerId: 1, pointerType: 'mouse', isPrimary: true,
+                button: 0, buttons: 1 };
+              p.el.dispatchEvent(new PE('pointerdown', o));
+              p.el.dispatchEvent(new MouseEvent('mousedown', o));
+              await sleep(rand(40, 140));
+              const o2 = Object.assign({}, o, { buttons: 0 });
+              p.el.dispatchEvent(new PE('pointerup', o2));
+              p.el.dispatchEvent(new MouseEvent('mouseup', o2));
+              p.el.dispatchEvent(new MouseEvent('click', o2));
+            }
           } else {
             // 短暂"走神"：暂停视频 2-6 秒再续播（simBreak 期间 tick 不抢着恢复）
             const v = player();
@@ -1687,8 +1831,8 @@
                 await sleep(rand(2000, 6000));
               } finally {
                 simBreak = false;
-                // 恢复播放前检查：若走神期间弹了验证码，交给 tick / solveCaptcha 接管
-                if (!captchaHint()) {
+                // 恢复播放前检查：若走神期间弹了验证码，或用户关了开关，就不续播
+                if (CFG.enabled && CFG.autoPlay && !captchaHint()) {
                   try { v.play().catch(() => {}); } catch (e) {}
                 }
               }
@@ -1732,7 +1876,7 @@
     }, waitMs);
   }
 
-  /* ==== 12. UI ==== */
+  /* ==== 13. UI ==== */
   const fmt = (s) => {
     if (!isFinite(s) || s < 0) return '--:--';
     s = Math.floor(s);
@@ -1740,56 +1884,56 @@
   };
 
   const CSS = [
-    '[K]{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:212px;box-sizing:border-box;',
+    '#' + ID.panel + '{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:212px;box-sizing:border-box;',
     'padding:10px 11px 11px;border-radius:12px;',
     'background:linear-gradient(180deg,rgba(30,33,42,.97),rgba(18,20,26,.97))!important;',
     'border:1px solid rgba(255,255,255,.09)!important;',
     'box-shadow:0 12px 34px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.05)!important;',
     'color:#e6e9ef!important;user-select:none;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);',
     'font:12px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif!important;}',
-    '[K] *{box-sizing:border-box;margin:0;padding:0;font-family:inherit!important;line-height:1.5!important}',
-    '[K] .[K]-hd{display:flex;align-items:center;gap:7px;cursor:move;margin-bottom:8px!important}',
-    '[K] .[K]-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#8b93a1!important;',
+    '#' + ID.panel + ' *{box-sizing:border-box;margin:0;padding:0;font-family:inherit!important;line-height:1.5!important}',
+    '#' + ID.panel + ' .[K]-hd{display:flex;align-items:center;gap:7px;cursor:move;margin-bottom:8px!important}',
+    '#' + ID.panel + ' .[K]-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#8b93a1!important;',
     'box-shadow:0 0 0 3px rgba(139,147,161,.16)!important;transition:background .25s,box-shadow .25s}',
-    '[K] .[K]-dot[data-s="play"]{background:#28c76f!important;box-shadow:0 0 0 3px rgba(40,199,111,.18)!important}',
-    '[K] .[K]-dot[data-s="pause"]{background:#ffd166!important;box-shadow:0 0 0 3px rgba(255,209,102,.18)!important}',
-    '[K] .[K]-dot[data-s="cap"]{background:#ffa94d!important;box-shadow:0 0 0 3px rgba(255,169,77,.18)!important}',
-    '[K] .[K]-title{font-size:12px!important;font-weight:600!important;color:#e6e9ef!important;letter-spacing:.3px}',
-    '[K] .[K]-fold{margin-left:auto!important;color:#8b93a1!important;font-size:11px!important;cursor:pointer;',
+    '#' + ID.panel + ' .[K]-dot[data-s="play"]{background:#28c76f!important;box-shadow:0 0 0 3px rgba(40,199,111,.18)!important}',
+    '#' + ID.panel + ' .[K]-dot[data-s="pause"]{background:#ffd166!important;box-shadow:0 0 0 3px rgba(255,209,102,.18)!important}',
+    '#' + ID.panel + ' .[K]-dot[data-s="cap"]{background:#ffa94d!important;box-shadow:0 0 0 3px rgba(255,169,77,.18)!important}',
+    '#' + ID.panel + ' .[K]-title{font-size:12px!important;font-weight:600!important;color:#e6e9ef!important;letter-spacing:.3px}',
+    '#' + ID.panel + ' .[K]-fold{margin-left:auto!important;color:#8b93a1!important;font-size:11px!important;cursor:pointer;',
     'padding:0 2px!important;transition:transform .18s;display:inline-block}',
-    '[K].[K]-collapsed .[K]-fold{transform:rotate(-90deg)}',
-    '[K].[K]-collapsed .[K]-body{display:none}',
-    '[K] .[K]-meta{color:#9aa4b2!important;font-size:11px!important;margin-bottom:7px!important;',
+    '#' + ID.panel + '.[K]-collapsed .[K]-fold{transform:rotate(-90deg)}',
+    '#' + ID.panel + '.[K]-collapsed .[K]-body{display:none}',
+    '#' + ID.panel + ' .[K]-meta{color:#9aa4b2!important;font-size:11px!important;margin-bottom:7px!important;',
     'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '[K] .[K]-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.1)!important;overflow:hidden;margin-bottom:9px!important}',
-    '[K] .[K]-bar>i{display:block;height:100%;width:0;border-radius:2px;',
+    '#' + ID.panel + ' .[K]-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.1)!important;overflow:hidden;margin-bottom:9px!important}',
+    '#' + ID.panel + ' .[K]-bar>i{display:block;height:100%;width:0;border-radius:2px;',
     'background:linear-gradient(90deg,#28c76f,#4ade80)!important;transition:width .45s linear}',
-    '[K] .[K]-sw{display:flex;align-items:center;gap:8px;margin-top:8px!important;cursor:pointer;',
+    '#' + ID.panel + ' .[K]-sw{display:flex;align-items:center;gap:8px;margin-top:8px!important;cursor:pointer;',
     'color:#c9d3e0!important;font-size:11px!important}',
-    '[K] .[K]-sw input{position:absolute!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}',
-    '[K] .[K]-track{position:relative;width:26px;height:15px;border-radius:99px;flex:0 0 auto;',
+    '#' + ID.panel + ' .[K]-sw input{position:absolute!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}',
+    '#' + ID.panel + ' .[K]-track{position:relative;width:26px;height:15px;border-radius:99px;flex:0 0 auto;',
     'background:rgba(255,255,255,.14)!important;transition:background .2s;display:inline-block}',
-    '[K] .[K]-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;',
+    '#' + ID.panel + ' .[K]-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;',
     'background:#8b93a1!important;transition:left .2s,background .2s}',
-    '[K] .[K]-sw input:checked~.[K]-track{background:#28c76f!important}',
-    '[K] .[K]-sw input:checked~.[K]-track .[K]-knob{left:13px;background:#fff!important}',
-    '[K] .[K]-manual{display:none;margin-top:8px!important;padding-top:8px!important;',
+    '#' + ID.panel + ' .[K]-sw input:checked~.[K]-track{background:#28c76f!important}',
+    '#' + ID.panel + ' .[K]-sw input:checked~.[K]-track .[K]-knob{left:13px;background:#fff!important}',
+    '#' + ID.panel + ' .[K]-manual{display:none;margin-top:8px!important;padding-top:8px!important;',
     'border-top:1px solid rgba(255,255,255,.08)!important}',
-    '[K] .[K]-prev{display:none;width:100%;max-height:44px;object-fit:contain;background:#fff!important;',
+    '#' + ID.panel + ' .[K]-prev{display:none;width:100%;max-height:44px;object-fit:contain;background:#fff!important;',
     'border-radius:5px;margin-bottom:5px!important;cursor:zoom-in;image-rendering:pixelated}',
-    '[K] .[K]-row{display:flex;gap:4px}',
-    '[K] .[K]-min{flex:1;min-width:0;background:#2b2f3a!important;border:1px solid #5b8def!important;',
+    '#' + ID.panel + ' .[K]-row{display:flex;gap:4px}',
+    '#' + ID.panel + ' .[K]-min{flex:1;min-width:0;background:#2b2f3a!important;border:1px solid #5b8def!important;',
     'border-radius:5px!important;color:#fff!important;font-size:12px!important;padding:3px 6px!important;letter-spacing:2px}',
-    '[K] .[K]-ok{flex:0 0 auto;cursor:pointer;border:0!important;border-radius:5px!important;',
+    '#' + ID.panel + ' .[K]-ok{flex:0 0 auto;cursor:pointer;border:0!important;border-radius:5px!important;',
     'padding:3px 8px!important;font-size:11px!important;color:#06240f!important;background:#28c76f!important;font-weight:600}',
-    '[K] .[K]-msg{display:none;margin-top:8px!important;padding:5px 8px!important;border-radius:6px!important;',
+    '#' + ID.panel + ' .[K]-msg{display:none;margin-top:8px!important;padding:5px 8px!important;border-radius:6px!important;',
     'font-size:11px!important;color:#ffc078!important;background:rgba(255,169,77,.12)!important;word-break:break-all}',
-    '[K].[K]-off{background:linear-gradient(180deg,rgba(26,28,34,.97),rgba(16,17,22,.97))!important}',
-    '[K].[K]-off .[K]-dot{background:#5b6270!important;box-shadow:none!important}',
-    '[K].[K]-off .[K]-title{color:#8b93a1!important}',
-    '[K].[K]-off .[K]-body{opacity:.45!important}',
-    '[K].[K]-off .[K]-sw:not(.[K]-master){pointer-events:none!important}',
-    '[K] .[K]-sw.[K]-master{padding-top:8px!important;border-top:1px solid rgba(255,255,255,.07)!important;',
+    '#' + ID.panel + '.[K]-off{background:linear-gradient(180deg,rgba(26,28,34,.97),rgba(16,17,22,.97))!important}',
+    '#' + ID.panel + '.[K]-off .[K]-dot{background:#5b6270!important;box-shadow:none!important}',
+    '#' + ID.panel + '.[K]-off .[K]-title{color:#8b93a1!important}',
+    '#' + ID.panel + '.[K]-off .[K]-body{opacity:.45!important}',
+    '#' + ID.panel + '.[K]-off .[K]-sw:not(.[K]-master){pointer-events:none!important}',
+    '#' + ID.panel + ' .[K]-sw.[K]-master{padding-top:8px!important;border-top:1px solid rgba(255,255,255,.07)!important;',
     'color:#e6e9ef!important;font-weight:600!important}',
   ].join('');
 
@@ -1988,7 +2132,7 @@
     updatePanel();
   }
 
-  /* ==== 13. 诊断 ==== */
+  /* ==== 14. 诊断 ==== */
   function capDebug() {
     console.group('%c[赛博代刷] 验证码诊断 v' + VERSION, 'color:#8ab4f8;font-weight:600');
     const box = document.getElementById('video-captcha');
@@ -2058,7 +2202,7 @@
     return out;
   }
 
-  /* ==== 14. 启动 ==== */
+  /* ==== 15. 启动 ==== */
   Object.assign(API, {
     cfg: CFG, state,
     player, nodeLinks, currentNodeId, nextNode, progress, totalDuration, captchaPresent, captchaHint,
@@ -2079,7 +2223,7 @@
     log('已启动 v' + VERSION + ' | 节点', currentNodeId() || '?', '|', p.index + '/' + p.total,
       '| 验证码', CFG.solveCaptcha ? '自动' : '手打',
       '| 倍速', CFG.playbackRate);
-    if (CFG.enabled && CFG.solveCaptcha) pingOcr();
+    // OCR 是可选组件，不在启动时探测，等验证码真出现再探（见 solveCaptcha）
     humanPulse();
     keyboardPulse();
     setInterval(tick, 800);
@@ -2095,6 +2239,6 @@
   try { boot(); API.ready = true; } catch (e) {
     state.bootError = e;
     API.errors.push('boot: ' + e.message);
-    console.error('%c[赛博代刷] 启动异常（' + dbg() + '.selfTest() 可用）', 'color:#ff6b6b;font-weight:600', e);
+    console.error('%c[赛博代刷] 启动异常' + (CFG.debug ? '（' + DBG_NAME + '.selfTest() 可用）' : ''), 'color:#ff6b6b;font-weight:600', e);
   }
 })();
