@@ -76,10 +76,63 @@
     ocrUrl: 'http://127.0.0.1:8899/ocr',
     hidePanel: false,
     panelPos: null,
+    keepAlive: true,       // 后台保活：静音音频让 Chrome 不冻结/回收后台标签页
     debug: false,          // true 才用随机名字暴露调试接口（默认不暴露，降低指纹）
     playbackRate: 1,   // 倍速，默认 1；可改 1.25/1.5，部分平台会检测异常
   };
   const CFG = normalizeConfig(Object.assign({}, DEFAULT, load()));
+  // 后台保活：Chrome 会把后台标签页整页冻结（默认 5 分钟起），冻结后脚本、视频全部停摆。
+  // 一个不在 DOM 里的静音循环音频能让页面保持“正在播放媒体”，从而不被冻结/回收。
+  let keepAudio = null, keepUrl = '', keepRetry = null;
+  function silentWavUrl(seconds) {
+    const rate = 8000, n = Math.round(rate * (seconds || 2));
+    const buf = new ArrayBuffer(44 + n);
+    const v = new DataView(buf);
+    const tag = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    tag(0, 'RIFF'); v.setUint32(4, 36 + n, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    tag(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8-bit PCM 的静音值
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function stopKeepAlive() {
+    if (keepRetry) {
+      document.removeEventListener('pointerdown', keepRetry, true);
+      document.removeEventListener('keydown', keepRetry, true);
+      keepRetry = null;
+    }
+    if (!keepAudio) return;
+    const a = keepAudio;
+    keepAudio = null;
+    try { a.pause(); a.src = ''; } catch (e) {}
+    try { URL.revokeObjectURL(keepUrl); } catch (e) {}
+    keepUrl = '';
+  }
+  function startKeepAlive() {
+    if (!CFG.enabled || !CFG.keepAlive || keepAudio) return;
+    try {
+      // 不进 DOM：页面上多一个 <audio> 也是指纹
+      const a = new Audio(silentWavUrl(2));
+      a.loop = true;
+      a.volume = 1;
+      keepAudio = a;
+      keepUrl = a.src;
+      const retry = () => {
+        a.play().then(() => {
+          if (keepRetry === retry) keepRetry = null;
+          document.removeEventListener('pointerdown', retry, true);
+          document.removeEventListener('keydown', retry, true);
+        }).catch(() => {});
+      };
+      // 没有用户手势时可能被自动播放策略拦下，等下一次点击/按键再试
+      a.play().then(() => { keepRetry = null; }).catch(() => {
+        keepRetry = retry;
+        document.addEventListener('pointerdown', retry, true);
+        document.addEventListener('keydown', retry, true);
+      });
+    } catch (e) { keepAudio = null; }
+  }
   // 调试接口：默认不挂任何全局变量；配置 debug:true 时才用随机名字挂到 window
   function exposeApi() {
     if (!CFG.debug) {
@@ -104,7 +157,7 @@
       const n = Number(v);
       return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
     };
-    ['enabled', 'muted', 'autoPlay', 'autoNext', 'skipExam', 'solveCaptcha', 'capCaseTry', 'hidePanel', 'debug']
+    ['enabled', 'muted', 'autoPlay', 'autoNext', 'skipExam', 'solveCaptcha', 'capCaseTry', 'hidePanel', 'keepAlive', 'debug']
       .forEach((k) => { cfg[k] = bool(cfg[k], DEFAULT[k]); });
     cfg.tail = num(cfg.tail, 0.2, 30, DEFAULT.tail);
     cfg.capRetry = Math.floor(num(cfg.capRetry, 0, 10, DEFAULT.capRetry));
@@ -153,7 +206,27 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const hid = (id) => { const el = document.getElementById(id); return el ? String(el.value) : ''; };
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 后台标签页里主线程的 setTimeout 会被节流（1 秒一次，连续嵌套的还会更狠），
+  // Worker 里的定时器不受影响，所以等待一律走 Worker，拿不到就退回 setTimeout。
+  const sleep = (() => {
+    try {
+      const src = 'onmessage=function(e){var d=e.data;setTimeout(function(){postMessage(d.id)},d.ms)}';
+      const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      let seq = 0;
+      const pending = new Map();
+      worker.onmessage = (e) => {
+        const done = pending.get(e.data);
+        if (done) { pending.delete(e.data); done(); }
+      };
+      return (ms) => new Promise((resolve) => {
+        const id = ++seq;
+        pending.set(id, resolve);
+        try { worker.postMessage({ id, ms }); } catch (e) { pending.delete(id); setTimeout(resolve, ms); }
+      });
+    } catch (e) {
+      return (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    }
+  })();
   const rand = (min, max) => min + Math.random() * (max - min);   // 随机数（用于各类抖动/随机等待）
 
   const state = {
@@ -1326,16 +1399,13 @@
   }
 
   // 轮询等待验证码弹窗关闭（每 180ms 检查一次，最长 timeout 毫秒）
-  function waitCaptchaClosed(timeout) {
-    return new Promise((resolve) => {
-      const start = Date.now();
-      const check = () => {
-        if (!captchaHint(true)) return resolve(true);
-        if (Date.now() - start > (timeout || 1500)) return resolve(false);
-        setTimeout(check, 180);
-      };
-      check();
-    });
+  async function waitCaptchaClosed(timeout) {
+    const start = Date.now();
+    for (;;) {
+      if (!captchaHint(true)) return true;
+      if (Date.now() - start > (timeout || 1500)) return false;
+      await sleep(180);
+    }
   }
 
   // 等待 <img> 加载完成（含错误处理），返回是否成功
@@ -1762,107 +1832,104 @@
   }
 
   // 以随机时间间隔做一件"人味"小事：小幅滚动 / 鼠标漫游 / 空白处点击 / 短暂走神暂停 / 发呆不动。
-  function humanPulse() {
-    const waitMs = rand(15000, 45000);            // 随机时间间隔：15-45 秒
-    setTimeout(async () => {
-      // 验证码活跃期完全静默，避免抢焦点/拖动进度/打乱 capHold
-      if (capBusy || capManual || captchaHint()) {
-        humanPulse();
-        return;
-      }
-      if (CFG.enabled) {
-        try {
-          const dice = Math.random();
-          if (dice < 0.20) {
-            // 什么都不做（人也会发呆）
-          } else if (dice < 0.50) {
-            // 小幅滚动屏幕：1-3 段，方向随机，段间随机停顿
-            const n = 1 + Math.floor(rand(0, 3));
-            for (let i = 0; i < n; i++) {
-              const dy = Math.round(rand(-180, 240));
-              if (dy) window.scrollBy({ top: dy, behavior: 'smooth' });
-              await sleep(rand(400, 1500));
-            }
-          } else if (dice < 0.75) {
-            // 鼠标漫游：走完整 pointer 链，带 movementX/Y 与 coalesced events
-            const n = 2 + Math.floor(rand(0, 4));
-            for (let i = 0; i < n; i++) {
-              const tx = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
-              const ty = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
-              await movePointerTo(tx, ty);
-              await sleep(rand(200, 700));
-            }
-          } else if (dice < 0.90) {
-            // 页面空白处点一下鼠标：只点确认过不是链接 / 按钮 / 播放器的容器，
-            // 事件发给落点上真正的元素（真实点击命中的就是它）
-            const p = blankPoint();
-            if (p) {
-              await movePointerTo(p.x, p.y);
-              const o = { bubbles: true, cancelable: true, composed: true, view: window,
-                clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
-                pointerId: 1, pointerType: 'mouse', isPrimary: true,
-                button: 0, buttons: 1 };
-              p.el.dispatchEvent(new PE('pointerdown', o));
-              p.el.dispatchEvent(new MouseEvent('mousedown', o));
-              await sleep(rand(40, 140));
-              const o2 = Object.assign({}, o, { buttons: 0 });
-              p.el.dispatchEvent(new PE('pointerup', o2));
-              p.el.dispatchEvent(new MouseEvent('mouseup', o2));
-              p.el.dispatchEvent(new MouseEvent('click', o2));
-            }
-          } else {
-            // 短暂"走神"：暂停视频 2-6 秒再续播（simBreak 期间 tick 不抢着恢复）
-            const v = player();
-            if (v && !v.paused) {
-              simBreak = true;
-              try {
-                try { v.pause(); } catch (e) {}
-                await sleep(rand(2000, 6000));
-              } finally {
-                simBreak = false;
-                // 恢复播放前检查：若走神期间弹了验证码，或用户关了开关，就不续播
-                if (CFG.enabled && CFG.autoPlay && !captchaHint()) {
-                  try { v.play().catch(() => {}); } catch (e) {}
-                }
+  // 等待走 Worker 定时器：后台标签页里主线程定时器会被 Chrome 节流，这里不受影响。
+  async function humanPulse() {
+    await sleep(rand(15000, 45000));               // 随机时间间隔：15-45 秒
+    // 验证码活跃期完全静默，避免抢焦点/拖动进度/打乱 capHold
+    if (capBusy || capManual || captchaHint()) {
+      humanPulse();
+      return;
+    }
+    if (CFG.enabled) {
+      try {
+        const dice = Math.random();
+        if (dice < 0.20) {
+          // 什么都不做（人也会发呆）
+        } else if (dice < 0.50) {
+          // 小幅滚动屏幕：1-3 段，方向随机，段间随机停顿
+          const n = 1 + Math.floor(rand(0, 3));
+          for (let i = 0; i < n; i++) {
+            const dy = Math.round(rand(-180, 240));
+            if (dy) window.scrollBy({ top: dy, behavior: 'smooth' });
+            await sleep(rand(400, 1500));
+          }
+        } else if (dice < 0.75) {
+          // 鼠标漫游：走完整 pointer 链，带 movementX/Y 与 coalesced events
+          const n = 2 + Math.floor(rand(0, 4));
+          for (let i = 0; i < n; i++) {
+            const tx = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
+            const ty = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
+            await movePointerTo(tx, ty);
+            await sleep(rand(200, 700));
+          }
+        } else if (dice < 0.90) {
+          // 页面空白处点一下鼠标：只点确认过不是链接 / 按钮 / 播放器的容器，
+          // 事件发给落点上真正的元素（真实点击命中的就是它）
+          const p = blankPoint();
+          if (p) {
+            await movePointerTo(p.x, p.y);
+            const o = { bubbles: true, cancelable: true, composed: true, view: window,
+              clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
+              pointerId: 1, pointerType: 'mouse', isPrimary: true,
+              button: 0, buttons: 1 };
+            p.el.dispatchEvent(new PE('pointerdown', o));
+            p.el.dispatchEvent(new MouseEvent('mousedown', o));
+            await sleep(rand(40, 140));
+            const o2 = Object.assign({}, o, { buttons: 0 });
+            p.el.dispatchEvent(new PE('pointerup', o2));
+            p.el.dispatchEvent(new MouseEvent('mouseup', o2));
+            p.el.dispatchEvent(new MouseEvent('click', o2));
+          }
+        } else {
+          // 短暂"走神"：暂停视频 2-6 秒再续播（simBreak 期间 tick 不抢着恢复）
+          const v = player();
+          if (v && !v.paused) {
+            simBreak = true;
+            try {
+              try { v.pause(); } catch (e) {}
+              await sleep(rand(2000, 6000));
+            } finally {
+              simBreak = false;
+              // 恢复播放前检查：若走神期间弹了验证码，或用户关了开关，就不续播
+              if (CFG.enabled && CFG.autoPlay && !captchaHint()) {
+                try { v.play().catch(() => {}); } catch (e) {}
               }
             }
           }
-        } catch (e) {}
-      }
-      humanPulse();                              // 下一轮，间隔重新随机
-    }, waitMs);
+        }
+      } catch (e) {}
+    }
+    humanPulse();                                  // 下一轮，间隔重新随机
   }
 
   // 键盘 Activity 心跳：30-90s 随机按一个导航键（不触发默认行为，仅派发事件）
   const isEditableTarget = (el) => !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '')));
-  function keyboardPulse() {
-    const waitMs = rand(30000, 90000);
-    setTimeout(async () => {
-      const active = document.activeElement;
-      // 不打断用户输入，也不在弹窗/验证码期间派发 Esc/Tab 等可能有关闭语义的键。
-      if (CFG.enabled && !capBusy && !capManual && !captchaHint() &&
-          !isEditableTarget(active) && !inOwnPanel(active)) {
-        try {
-          const KEYS = [
-            { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
-            { key: 'ArrowUp',   code: 'ArrowUp',   keyCode: 38 },
-            { key: 'PageDown',  code: 'PageDown',  keyCode: 34 },
-            { key: 'PageUp',    code: 'PageUp',    keyCode: 33 },
-          ];
-          const k = KEYS[Math.floor(rand(0, KEYS.length))];
-          const target = (active && active !== document.body) ? active : document.body;
-          const base = { bubbles: true, cancelable: true, composed: true, view: window, key: k.key, code: k.code };
-          const kd = new KeyboardEvent('keydown', base);
-          setEventProp(kd, 'keyCode', k.keyCode); setEventProp(kd, 'which', k.keyCode); setEventProp(kd, 'charCode', 0);
-          target.dispatchEvent(kd);
-          await sleep(rand(40, 140));
-          const ku = new KeyboardEvent('keyup', base);
-          setEventProp(ku, 'keyCode', k.keyCode); setEventProp(ku, 'which', k.keyCode); setEventProp(ku, 'charCode', 0);
-          target.dispatchEvent(ku);
-        } catch (e) {}
-      }
-      keyboardPulse();
-    }, waitMs);
+  async function keyboardPulse() {
+    await sleep(rand(30000, 90000));
+    const active = document.activeElement;
+    // 不打断用户输入，也不在弹窗/验证码期间派发 Esc/Tab 等可能有关闭语义的键。
+    if (CFG.enabled && !capBusy && !capManual && !captchaHint() &&
+        !isEditableTarget(active) && !inOwnPanel(active)) {
+      try {
+        const KEYS = [
+          { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+          { key: 'ArrowUp',   code: 'ArrowUp',   keyCode: 38 },
+          { key: 'PageDown',  code: 'PageDown',  keyCode: 34 },
+          { key: 'PageUp',    code: 'PageUp',    keyCode: 33 },
+        ];
+        const k = KEYS[Math.floor(rand(0, KEYS.length))];
+        const target = (active && active !== document.body) ? active : document.body;
+        const base = { bubbles: true, cancelable: true, composed: true, view: window, key: k.key, code: k.code };
+        const kd = new KeyboardEvent('keydown', base);
+        setEventProp(kd, 'keyCode', k.keyCode); setEventProp(kd, 'which', k.keyCode); setEventProp(kd, 'charCode', 0);
+        target.dispatchEvent(kd);
+        await sleep(rand(40, 140));
+        const ku = new KeyboardEvent('keyup', base);
+        setEventProp(ku, 'keyCode', k.keyCode); setEventProp(ku, 'which', k.keyCode); setEventProp(ku, 'charCode', 0);
+        target.dispatchEvent(ku);
+      } catch (e) {}
+    }
+    keyboardPulse();
   }
 
   /* ==== 13. UI ==== */
@@ -1969,6 +2036,8 @@
     capToken++;                       // 让正在等待的验证码流程尽快失效
     resetCapAttempts();
     save();
+    if (CFG.enabled) startKeepAlive();
+    else stopKeepAlive();
     const v = player();
     if (on) {
       capManual = false;
@@ -2075,6 +2144,12 @@
 
     const master = mkSwitch('启用脚本', CFG.enabled, (on) => applyEnabled(on), K + '-master', ID.master);
     const autoSw = mkSwitch('自动下一节', CFG.autoNext, (on) => { CFG.autoNext = on; save(); });
+    const muteSw = mkSwitch('自动静音', CFG.muted, (on) => {
+      CFG.muted = on;
+      save();
+      const v = player();
+      if (v) { try { v.muted = on; } catch (e) {} }
+    });
     const capSw = mkSwitch('自动识别验证码', CFG.solveCaptcha, (on) => {
       CFG.solveCaptcha = on;
       capToken++;
@@ -2112,7 +2187,7 @@
     const msg = document.createElement('div');
     msg.className = K + '-msg';
 
-    body.append(meta, bar, master, autoSw, capSw, manual, msg);
+    body.append(meta, bar, master, autoSw, muteSw, capSw, manual, msg);
     box.append(hd, body);
     (document.body || document.documentElement).appendChild(box);
 
@@ -2184,6 +2259,7 @@
       capTries,
       capAttempt,
       solveCaptcha: CFG.solveCaptcha,
+      keepAlive: { enabled: CFG.keepAlive, started: !!keepAudio, playing: !!(keepAudio && !keepAudio.paused) },
       playbackRate: CFG.playbackRate,
       ocr: { ok: state.ocrOk, active: state.ocrActive || '(无)', err: state.ocrErr || '' },
     };
@@ -2213,6 +2289,7 @@
       '| 验证码', CFG.solveCaptcha ? '自动' : '手打',
       '| 倍速', CFG.playbackRate);
     // OCR 是可选组件，不在启动时探测，等验证码真出现再探（见 solveCaptcha）
+    startKeepAlive();
     humanPulse();
     keyboardPulse();
     setInterval(tick, 800);
