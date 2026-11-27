@@ -14,45 +14,61 @@
  * 5. 违反上述条款将自动终止你的使用授权。
  * ---------------------------------------------------------------------------
  * 用法：课程页 F12 → Console → 粘贴本文件 → 回车（整页跳转后需重新粘贴）
+ * 本文件由 tools/build-console.mjs 从油猴版 7.0 自动生成，请勿手工修改。
+ * 与油猴版功能一致：真实键盘/指针交互链、验证码流程、拟人操作、单实例保护、
+ * 错误兜底均相同。区别只在依赖：没有 GM_xmlhttpRequest（fetchB64 / httpJson
+ * 走 fetch 兜底，跨域访问 127.0.0.1 需 OCR 服务端放行 CORS）；没有脚本存储和
+ * 菜单命令（配置存 localStorage，调试开关也在这里改）。
  * ============================================================================ */
 
 (function () {
   'use strict';
 
-  const VERSION = '6.7c';
-  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'cdcass.taiskeji.com', 'cdcas.taiskeji.com'];
-  // 同族站点直接按后缀放行（泰诗科技等同类部署的子域都能用）
-  const HOST_SUFFIX = ['.taiskeji.com'];
+  const VERSION = '7.0c';
+  // 面板的 id / class 前缀每次加载随机生成，不留固定的 DOM 指纹
+  const K = 'c' + Math.random().toString(36).slice(2, 8);
+  const ID = { panel: K + '_panel', style: K + '_style', manual: K + '_manual', prev: K + '_prev', min: K + '_min', master: K + '_master' };
+  const TITLE = '赛博助手';
+  // 支持的站点（同平台多套部署）；不带子域的域名同时匹配它的所有子域名
+  const HOSTS = ['cdcas.chaoxiankeji.com', 'cdcas.duxingkej.com', 'taiskeji.com'];
+  const isSupportedHost = () => HOSTS.some((h) => location.hostname === h || location.hostname.endsWith('.' + h));
 
-  const hostOk = HOSTS.indexOf(location.hostname) >= 0 ||
-    HOST_SUFFIX.some((suf) => location.hostname.endsWith(suf));
-  if (!hostOk) {
-    console.log('%c[赛博代刷] 注意：当前不在支持站点列表（' + HOSTS.join(' / ') + '），功能照常尝试', 'color:#ffa94d');
+  // 油猴版按 @match 精确注入；Console 版没有 @match，因此只提示不拦截，
+  // 让用户在其它部署上也能手动粘贴尝试。
+  if (!isSupportedHost()) {
+    console.log('%c[赛博代刷] 注意：当前不在支持站点列表，功能照常尝试', 'color:#ffa94d');
   }
 
-  /* ==== 0. 接口优先 ==== */
-  const API = { version: VERSION, ready: false, errors: [] };
+  // 同一页重复粘贴（例如贴了两遍或与油猴版并存）时只保留先启动的一份，
+  // 避免双倍定时器 / 双击提交。
+  // 不挂固定全局变量做标记（页面脚本一句 if (window.__X__) 就能据此判定），直接查已有面板的标题。
+  try {
+    if (Array.prototype.some.call(document.querySelectorAll('span'), (el) => el.textContent === TITLE)) {
+      console.warn('%c[赛博代刷] 已有一份脚本在运行，本次注入已跳过', 'color:#ffa94d;font-weight:600');
+      return;
+    }
+  } catch (e) {}
 
-  // 随机命名空间：id / class 前缀每次加载都不同，页面脚本无法按固定特征识别
-  const NS = 'n' + Math.random().toString(36).slice(2, 7);
-  const K = 'k' + Math.random().toString(36).slice(2, 5);
-  const PID = NS + '-p', SID = NS + '-s', MID = NS + '-m', PREVID = NS + '-v', INID = NS + '-i', MASTERID = NS + '-x';
-  // 不挂任何固定全局变量，也不写 data-* 标记（这两类是最容易被探测的指纹）
+  /* ==== 1. 接口优先 ==== */
+  const API = { version: VERSION, ready: false, errors: [] };
+  const DBG_NAME = '_' + Math.random().toString(36).slice(2, 8);
   try { console.log('%c[赛博代刷] 注入 v' + VERSION, 'color:#28c76f;font-weight:700', '| 已启动'); } catch (e) {}
   try {
     console.log('%c[赛博代刷] 仅供个人学习研究使用，禁止商用。使用风险与后果由使用者自行承担。', 'color:#9aa0a6');
   } catch (e) {}
 
-  /* ==== 1. 配置 ==== */
+  /* ==== 2. 配置 ==== */
   const KEY = '__CDWL_CYBER_CFG__';
+  // 配置优先存油猴的脚本存储（页面脚本连 localStorage 的键都枚举不到）；
+  // 没有 GM 存储（Console 版）时退回 localStorage。
+  const LEGACY_KEY = '__CX_PLAY_CFG__';
+  const gmStore = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   const DEFAULT = {
     enabled: true,
-    rate: 1,
     muted: true,
     autoPlay: true,
     autoNext: true,
     skipExam: true,
-    delay: 2000,
     tail: 1.5,
     solveCaptcha: true,
     capCaseTry: true,
@@ -60,50 +76,129 @@
     ocrUrl: 'http://127.0.0.1:8899/ocr',
     hidePanel: false,
     panelPos: null,
-    debug: false,            // true 才随机暴露调试接口（默认不暴露，降低指纹）
-    autoNextMode: 'auto',    // auto=自动跳节；prompt=只在面板提示，点了才跳
-    delayMin: 15000,         // 播完到跳节的最短停留（真人不会秒跳）
-    delayMax: 60000,         // 最长停留（每次随机）
-    restEvery: 4,            // 每 N 节休息一次，0=不休息
-    restMin: 300000,         // 休息下限 5 分钟
-    restMax: 900000,         // 休息上限 15 分钟
-    dailyMaxSections: 0,     // 单日最多自动学几节，0=不限
-    humanFill: true,         // 填验证码时派发 mousedown、逐字符键入、补 keypress
-    typeMin: 70,             // 逐字符键入间隔下限 ms
-    typeMax: 240,            // 逐字符键入间隔上限 ms
-    stuckReload: true,       // 播放卡死（位置连续不动）自动刷新
+    keepAlive: true,       // 后台保活：静音音频让 Chrome 不冻结/回收后台标签页
+    debug: false,          // true 才用随机名字暴露调试接口（默认不暴露，降低指纹）
+    playbackRate: 1,   // 倍速，默认 1；可改 1.25/1.5，部分平台会检测异常
   };
-  const CFG = Object.assign({}, DEFAULT, load());
-
-  // 调试接口：只有 CFG.debug 为 true 时，用随机名字挂到 window
-  const DBG_NAME = '_' + Math.random().toString(36).slice(2, 8);
+  const CFG = normalizeConfig(Object.assign({}, DEFAULT, load()));
+  // 后台保活：Chrome 会把后台标签页整页冻结（默认 5 分钟起），冻结后脚本、视频全部停摆。
+  // 一个不在 DOM 里的静音循环音频能让页面保持“正在播放媒体”，从而不被冻结/回收。
+  let keepAudio = null, keepUrl = '', keepRetry = null;
+  function silentWavUrl(seconds) {
+    const rate = 8000, n = Math.round(rate * (seconds || 2));
+    const buf = new ArrayBuffer(44 + n);
+    const v = new DataView(buf);
+    const tag = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+    tag(0, 'RIFF'); v.setUint32(4, 36 + n, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+    tag(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8-bit PCM 的静音值
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  function stopKeepAlive() {
+    if (keepRetry) {
+      document.removeEventListener('pointerdown', keepRetry, true);
+      document.removeEventListener('keydown', keepRetry, true);
+      keepRetry = null;
+    }
+    if (!keepAudio) return;
+    const a = keepAudio;
+    keepAudio = null;
+    try { a.pause(); a.src = ''; } catch (e) {}
+    try { URL.revokeObjectURL(keepUrl); } catch (e) {}
+    keepUrl = '';
+  }
+  function startKeepAlive() {
+    if (!CFG.enabled || !CFG.keepAlive || keepAudio) return;
+    try {
+      // 不进 DOM：页面上多一个 <audio> 也是指纹
+      const a = new Audio(silentWavUrl(2));
+      a.loop = true;
+      a.volume = 1;
+      keepAudio = a;
+      keepUrl = a.src;
+      const retry = () => {
+        a.play().then(() => {
+          if (keepRetry === retry) keepRetry = null;
+          document.removeEventListener('pointerdown', retry, true);
+          document.removeEventListener('keydown', retry, true);
+        }).catch(() => {});
+      };
+      // 没有用户手势时可能被自动播放策略拦下，等下一次点击/按键再试
+      a.play().then(() => { keepRetry = null; }).catch(() => {
+        keepRetry = retry;
+        document.addEventListener('pointerdown', retry, true);
+        document.addEventListener('keydown', retry, true);
+      });
+    } catch (e) { keepAudio = null; }
+  }
+  // 调试接口：默认不挂任何全局变量；配置 debug:true 时才用随机名字挂到 window
   function exposeApi() {
     if (!CFG.debug) {
-      try { console.log('%c[赛博代刷] 调试接口未开启（配置里 debug:true 后刷新）', 'color:#9aa0a6'); } catch (e) {}
-      return '';
+      try { console.log('%c[赛博代刷] 调试接口未开启（开启方式见 README「调试接口」）', 'color:#9aa0a6'); } catch (e) {}
+      return;
     }
     try {
       window[DBG_NAME] = API;
       console.log('%c[赛博代刷] 本次调试接口名：' + DBG_NAME, 'color:#8ab4f8;font-weight:700', '例：' + DBG_NAME + '.selfTest()');
-      return DBG_NAME;
-    } catch (e) { return ''; }
+    } catch (e) {}
   }
   exposeApi();
+  // 油猴菜单里的开关：配置存在脚本存储里，页面上没有别的入口能改 debug
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('开 / 关调试接口（刷新后生效）', () => { CFG.debug = !CFG.debug; save(); });
+    }
+  } catch (e) {}
+  function normalizeConfig(cfg) {
+    const bool = (v, fallback) => (typeof v === 'boolean' ? v : v == null ? fallback : !/^(false|0|no|off)$/i.test(String(v)));
+    const num = (v, min, max, fallback) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+    };
+    ['enabled', 'muted', 'autoPlay', 'autoNext', 'skipExam', 'solveCaptcha', 'capCaseTry', 'hidePanel', 'keepAlive', 'debug']
+      .forEach((k) => { cfg[k] = bool(cfg[k], DEFAULT[k]); });
+    cfg.tail = num(cfg.tail, 0.2, 30, DEFAULT.tail);
+    cfg.capRetry = Math.floor(num(cfg.capRetry, 0, 10, DEFAULT.capRetry));
+    cfg.playbackRate = num(cfg.playbackRate, 0.25, 4, DEFAULT.playbackRate);
+    cfg.ocrUrl = typeof cfg.ocrUrl === 'string' ? cfg.ocrUrl.trim() : DEFAULT.ocrUrl;
+    const pos = cfg.panelPos;
+    cfg.panelPos = pos && Number.isFinite(Number(pos.left)) && Number.isFinite(Number(pos.top))
+      ? { left: Number(pos.left), top: Number(pos.top) }
+      : null;
+    return cfg;
+  }
   function load() {
     try {
+      if (gmStore) {
+        const cur = GM_getValue(KEY, '');
+        if (typeof cur === 'string' && cur) return JSON.parse(cur) || {};
+        for (const k of [KEY, LEGACY_KEY]) {
+          const legacy = localStorage.getItem(k);
+          if (!legacy) continue;
+          localStorage.removeItem(k);
+          GM_setValue(KEY, legacy);
+          return JSON.parse(legacy) || {};
+        }
+        return {};
+      }
       const cur = localStorage.getItem(KEY);
       if (cur) return JSON.parse(cur) || {};
-      const legacy = localStorage.getItem('__CX_PLAY_CFG__');   // 旧版本配置自动迁移
+      const legacy = localStorage.getItem(LEGACY_KEY);
       if (legacy) {
-        const v = JSON.parse(legacy) || {};
-        localStorage.setItem(KEY, JSON.stringify(v));
-        localStorage.removeItem('__CX_PLAY_CFG__');
-        return v;
+        localStorage.setItem(KEY, legacy);
+        localStorage.removeItem(LEGACY_KEY);
       }
-      return {};
+      return legacy ? JSON.parse(legacy) || {} : {};
     } catch (e) { return {}; }
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(CFG)); } catch (e) {} }
+  function save() {
+    try {
+      if (gmStore) GM_setValue(KEY, JSON.stringify(CFG));
+      else localStorage.setItem(KEY, JSON.stringify(CFG));
+    } catch (e) {}
+  }
 
   const log = (...a) => console.log('%c[赛博代刷]', 'color:#28c76f;font-weight:600', ...a);
   const warn = (...a) => console.warn('%c[赛博代刷]', 'color:#ffa94d;font-weight:600', ...a);
@@ -111,7 +206,28 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const hid = (id) => { const el = document.getElementById(id); return el ? String(el.value) : ''; };
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 后台标签页里主线程的 setTimeout 会被节流（1 秒一次，连续嵌套的还会更狠），
+  // Worker 里的定时器不受影响，所以等待一律走 Worker，拿不到就退回 setTimeout。
+  const sleep = (() => {
+    try {
+      const src = 'onmessage=function(e){var d=e.data;setTimeout(function(){postMessage(d.id)},d.ms)}';
+      const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      let seq = 0;
+      const pending = new Map();
+      worker.onmessage = (e) => {
+        const done = pending.get(e.data);
+        if (done) { pending.delete(e.data); done(); }
+      };
+      return (ms) => new Promise((resolve) => {
+        const id = ++seq;
+        pending.set(id, resolve);
+        try { worker.postMessage({ id, ms }); } catch (e) { pending.delete(id); setTimeout(resolve, ms); }
+      });
+    } catch (e) {
+      return (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    }
+  })();
+  const rand = (min, max) => min + Math.random() * (max - min);   // 随机数（用于各类抖动/随机等待）
 
   const state = {
     status: '待机',
@@ -125,24 +241,14 @@
     capPassAt: 0,     // 验证通过的时间戳，用于避免残留标记导致立刻二次暂停
   };
   let capHold = false;
-  let capBusy = false, capTries = 0, capAt = 0, capKey = '', capAttempt = 0;
-
-  /* ==== 2. 播放器挂钩 ==== */
-  try {
-    const proto = HTMLMediaElement.prototype;
-    const rd = Object.getOwnPropertyDescriptor(proto, 'playbackRate');
-    if (rd && rd.get && rd.set) {
-      Object.defineProperty(proto, 'playbackRate', {
-        configurable: true, enumerable: rd.enumerable,
-        get() { return rd.get.call(this); },
-        set(v) {
-          if (!CFG.enabled) { rd.set.call(this, Number(v) || 0); return; }
-          rd.set.call(this, (Number(v) || 0) < CFG.rate ? CFG.rate : Number(v));
-        },
-      });
-    }
-  } catch (e) { API.errors.push('倍速钩子: ' + e.message); }
-  // 不再覆盖 document.hidden / visibilityState（伪造可见性很容易被交叉校验抓到）
+  let capBusy = false, capTries = 0, capAt = 0, capAttempt = 0;
+  let capManual = false, capSession = '', capImageKey = '', capToken = 0;
+  const capFlowActive = (token) => CFG.enabled && CFG.solveCaptcha && !capManual &&
+    (token == null || token === capToken);
+  function resetCapAttempts() {
+    capTries = 0; capAttempt = 0; capAt = 0;
+    capSession = ''; capImageKey = '';
+  }
 
   function player() {
     const inBox = $$('#videoContent video, .courseplay-video video, .ckplayer video');
@@ -154,8 +260,8 @@
     });
   }
   const declaredDuration = () => { const v = Number(hid('video-duration')); return Number.isFinite(v) && v > 0 ? v : 0; };
-  function totalDuration() {
-    const v = player();
+  function totalDuration(v) {
+    v = v || player();
     if (v && isFinite(v.duration) && v.duration > 0) return v.duration;
     return declaredDuration();
   }
@@ -163,18 +269,29 @@
   /* ==== 3. 验证码存在性 ==== */
   const captchaPresent = () => {
     const box = document.getElementById('video-captcha');
-    return !!(box && box.children && box.children.length);
+    if (!box || !box.children || !box.children.length || !shown(box)) return false;
+    // 容器本身可能一直可见，真正关闭后只留下 display:none/opacity:0 的旧节点；
+    // 必须再确认里面还有可见输入框或验证码图，否则会永久卡在暂停。
+    return !!findVisibleCodeInput(box) || !!firstImage(box);
   };
 
   // 只认"看得见的"验证码：弹窗关掉后 #yzCode / #codeImg 往往还留在 DOM 里，
-  // 判存在会把播放一直卡在暂停（这就是"验证过了还暂停"的原因）
-  function captchaHint() {
+  // 判存在会把播放一直卡在暂停（这就是"验证过了还暂停"的原因）。
+  // 页面每 250ms 就会触发 timeupdate，短缓存能避免反复做全页 DOM 扫描。
+  let capHintAt = 0, capHintVal = false;
+  function captchaHint(force) {
+    const now = Date.now();
+    if (!force && now - capHintAt < 200) return capHintVal;
+    capHintVal = captchaHintUncached();
+    capHintAt = now;
+    return capHintVal;
+  }
+  function captchaHintUncached() {
     if (captchaPresent()) return true;
     try {
       for (const layer of document.querySelectorAll('.layui-layer, [class*="layui-layer"]')) {
         if (inOwnPanel(layer) || !shown(layer)) continue;
-        const hasCodeImg = !!layer.querySelector('img[src*="/service/code"], #codeImg');
-        if (!hasCodeImg) continue;
+        if (!hasVisibleCodeImage(layer)) continue;
         const box = layer.querySelector('.layui-layer-wrap') || layer;
         if (!visible(box)) continue;
         const input = findCodeInput(box, true) || findVisibleCodeInput(box);
@@ -184,11 +301,11 @@
       // 否则空容器会被当成"验证码出现"，把播放一直卡住。
       for (const c of document.querySelectorAll('[class*="captcha"],[id*="captcha"],[class*="vcode"],[id*="vcode"],[class*="verify"],[id*="verify"],[class*="yzm"],[id*="yzm"]')) {
         if (c.id === 'video-captcha' || inOwnPanel(c)) continue;
-        if (!visible(c)) continue;
+        if (!shown(c)) continue;
         if (findCodeInput(c)) return true;
       }
       for (const el of document.querySelectorAll('input[maxlength="4"],input[maxlength="5"],input[maxlength="6"]')) {
-        if (inOwnPanel(el) || !visible(el)) continue;
+        if (inOwnPanel(el) || !shown(el)) continue;
         let up = el.parentElement, depth = 0;
         while (up && depth < 3) {
           if (firstImage(up)) return true;
@@ -208,26 +325,36 @@
       if (!m || seen.has(m[1])) return null;
       seen.add(m[1]);
       return { id: m[1], href, title: clean(a.getAttribute('title') || a.textContent || '') };
-    }).filter(Boolean);
+    }).filter(Boolean).map((item, index) => Object.assign({}, item, { index }));
   }
   function currentNodeId() {
     const v = hid('video-nodeId');
     if (/^\d+$/.test(v)) return v;
     const act = $('.detmain-navlist a.on') || $('.detmain-tabs a.on');
     const m = act && (act.getAttribute('href') || '').match(/nodeId=(\d+)/);
-    return m ? m[1] : '';
+    if (m) return m[1];
+    const u = String(location.search || '').match(/[?&]nodeId=(\d+)/);
+    return u ? u[1] : '';
   }
+  // 修正：遇到考试节点先记录、继续找后面的非考试节点；后面全是考试才返回兜底
   function nextNode() {
     const links = nodeLinks();
     if (!links.length) return null;
     const idx = links.findIndex((l) => l.id === currentNodeId());
     if (idx < 0) return links[0];
+    let firstExam = null;
     for (let i = idx + 1; i < links.length; i++) {
       const c = links[i];
-      if (/考试|测试|测验|exam|quiz/i.test(c.title) && CFG.skipExam) return Object.assign({}, c, { exam: true });
-      return c;
+      if (/考试|测试|测验|exam|quiz/i.test(c.title)) {
+        if (CFG.skipExam) {
+          if (!firstExam) firstExam = Object.assign({}, c, { exam: true });
+          continue;                       // 跳过考试，继续找后续视频
+        }
+        return c;                         // 不跳过考试：直接返回，交给 goNext 停下
+      }
+      return c;                           // 首个非考试节点
     }
-    return null;
+    return firstExam;                     // 后面全是考试
   }
   const progress = () => {
     const links = nodeLinks();
@@ -236,97 +363,58 @@
 
   let armed = true, busy = false, lastAt = 0;
 
-  const randDelay = function () {
-    const a = Math.max(0, Number(CFG.delayMin) || 2000);
-    const b = Math.max(a, Number(CFG.delayMax) || a);
-    return a + Math.random() * (b - a);
-  };
-
-  // 学习配额：单日节数上限 + 每 N 节强制休息
-  const DAY_KEY = '__CDWL_DAY__';
-  function dayStat() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(DAY_KEY) || '{}');
-      const today = new Date().toISOString().slice(0, 10);
-      if (raw.date !== today) return { date: today, sections: 0 };
-      return { date: today, sections: Number(raw.sections) || 0 };
-    } catch (e) { return { date: new Date().toISOString().slice(0, 10), sections: 0 }; }
-  }
-  function dayAdd(n) {
-    const st = dayStat();
-    st.sections += n;
-    try { localStorage.setItem(DAY_KEY, JSON.stringify(st)); } catch (e) {}
-    return st;
-  }
-
-  async function quotaGate() {
-    const st = dayStat();
-    const max = Number(CFG.dailyMaxSections) || 0;
-    if (max > 0 && st.sections >= max) {
-      state.status = '今日已自动学习 ' + st.sections + ' 节（上限 ' + max + '），已停止自动跳节';
-      warn(state.status);
-      return false;
-    }
-    const every = Number(CFG.restEvery) || 0;
-    if (every > 0 && st.sections > 0 && st.sections % every === 0) {
-      const a = Math.max(0, Number(CFG.restMin) || 300000);
-      const b = Math.max(a, Number(CFG.restMax) || a);
-      const ms = a + Math.random() * (b - a);
-      state.status = '已连续学 ' + st.sections + ' 节，休息 ' + Math.round(ms / 60000) + ' 分钟';
-      log(state.status);
-      await sleep(ms);
-    }
-    dayAdd(1);
-    return true;
-  }
-
   async function goNext(why) {
     if (!CFG.enabled || !CFG.autoNext || busy || captchaHint()) return;
     const n = nextNode();
     if (!n) { state.status = '已是最后一节'; return; }
-    if (n.exam) { state.status = '下一节是考试，已停下：' + n.title; return; }
-    if (CFG.autoNextMode === 'prompt') {
-      state.status = '本节播完，点面板「进入下一节」继续';
-      log(state.status);
-      armed = false; lastAt = Date.now();
-      return;
-    }
-    if (!(await quotaGate())) { armed = false; lastAt = Date.now(); return; }
+    if (n.exam) { state.status = '后面只剩考试节点，已停下：' + n.title; return; }
     busy = true; armed = false; lastAt = Date.now();
-    const p = progress();
-    state.status = '播完（' + why + '）→ 停留片刻后进入第 ' + (p.index + 1) + ' 节';
+    const targetIndex = Number.isFinite(n.index) ? n.index + 1 : progress().index + 1;
+    const waitMs = rand(1000, 3000);   // 进入下一节前随机等待 1-3 秒
+    state.status = '播完（' + why + '）→ ' + (waitMs / 1000).toFixed(1) + 's 后进入第 ' + targetIndex + ' 节';
     log(state.status);
-    await sleep(randDelay());
-    try { location.href = n.href; } catch (e) {
-      const link = $('.detmain-navlist a[href*="nodeId=' + n.id + '"]');
-      if (link) link.click();
+    await sleep(waitMs);
+
+    // 等待期间用户可能关闭自动换节，或平台弹出验证码；不能继续导航。
+    if (!CFG.enabled || !CFG.autoNext) {
+      busy = false; armed = true;
+      state.status = '自动换节已取消';
+      return false;
     }
+    if (captchaHint(true)) {
+      busy = false; armed = true;
+      state.status = '检测到验证码，已取消本次换节';
+      return false;
+    }
+
+    const unlockIfStayed = () => setTimeout(() => {
+      if (busy) { busy = false; armed = true; }
+    }, 4000);
+    try { location.href = n.href; unlockIfStayed(); return true; } catch (e) {
+      const link = $('.detmain-navlist a[href*="nodeId=' + n.id + '"]');
+      if (link) { link.click(); unlockIfStayed(); return true; }
+    }
+    busy = false; armed = true;
+    state.status = '进入下一节失败，已保留当前页';
+    warn(state.status);
+    return false;
   }
 
+  const watched = new WeakSet();   // 记录已接管的 <video>，不给页面元素挂自定义属性
   function watchPlayer(v) {
-    if (v.__cxw__) return;
-    v.__cxw__ = true;
+    if (watched.has(v)) return;
+    watched.add(v);
     v.addEventListener('ended', () => goNext('ended'), true);
+    let tailTryAt = 0;
     v.addEventListener('timeupdate', () => {
-      if (!CFG.enabled || !CFG.autoNext || !armed || busy || captchaHint()) return;
-      const total = totalDuration();
-      if (total && v.currentTime >= total - CFG.tail) goNext('尾段');
+      if (!CFG.enabled || !CFG.autoNext || !armed || busy) return;
+      if (Date.now() - tailTryAt < 1200) return;   // 限制尾段重复触发/扫 DOM 的频率
+      const total = totalDuration(v);
+      if (total && v.currentTime >= total - CFG.tail) {
+        tailTryAt = Date.now();
+        goNext('尾段');
+      }
     }, true);
-    let stuck = 0, lastPos = -1;
-    v.addEventListener('timeupdate', () => {
-      if (!CFG.stuckReload || !CFG.enabled) return;
-      if (Math.abs(v.currentTime - lastPos) < 0.05 && !v.paused) {
-        if (++stuck >= 6 && !captchaHint()) {
-          warn('播放位置长时间不动，刷新页面');
-          try { location.reload(); } catch (e) {}
-        }
-      } else { stuck = 0; }
-      lastPos = v.currentTime;
-    }, true);
-    v.addEventListener('ratechange', () => {
-      if (!CFG.enabled) return;
-      if (v.playbackRate < CFG.rate) { try { v.playbackRate = CFG.rate; } catch (e) {} }
-    });
     log('已接管播放器，时长', totalDuration() || '未知');
   }
 
@@ -346,19 +434,25 @@
   }
   // 连同祖先一起判可见：隐藏的容器里，子元素本身可能仍算出非零尺寸
   function shown(el) {
+    if (!el) return false;
+    // checkVisibility 一次判完元素及其祖先的 display / visibility / opacity
+    if (typeof el.checkVisibility === 'function') {
+      try { return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && visible(el); } catch (e) {}
+    }
     let n = el;
     while (n && n.nodeType === 1) {
       try {
         if (n.style && n.style.display === 'none') return false;
         const st = (n.ownerDocument.defaultView || window).getComputedStyle(n);
-        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
       } catch (e) {}
       n = n.parentElement;
     }
     return visible(el);
   }
 
-  function deepAll(root, sel) {    const out = [];
+  function deepAll(root, sel) {
+    const out = [];
     (function walk(node) {
       if (!node || !node.querySelectorAll) return;
       node.querySelectorAll(sel).forEach((el) => out.push(el));
@@ -366,11 +460,13 @@
     })(root);
     return out;
   }
-  const inOwnPanel = (el) => !!(el.closest && el.closest('#' + PID));
+  const inOwnPanel = (el) => !!(el.closest && el.closest('#' + ID.panel));
 
   // 平台验证码弹窗（layui）的固定特征
   const LAYER_SEL = '.layui-layer, .layui-layer-wrap, [class*="layui-layer"]';
   const CODE_IMG_RE = /\/service\/code|codeImg|captcha|verify|vcode|yzm/i;
+  const hasVisibleCodeImage = (root) => deepAll(root, 'img').some((im) =>
+    CODE_IMG_RE.test(im.getAttribute('src') || '') && shown(im));
 
   function isCodeInput(el, allowAny) {
     if (!el || !visible(el)) return false;
@@ -452,18 +548,26 @@
       }
     }
     for (const el of deepAll(root, 'input[type="hidden"]')) {
+      // #yzCode 是本脚本要写入的提交字段，不是答案源；旧值会导致下一次验证码
+      // 直接提交上一轮的码，必须排除。
+      if (el.id === 'yzCode' || String(el.name || '').toLowerCase() === 'yzcode') continue;
       if (CODE_RE.test(clean(el.value))) return clean(el.value);
     }
     return '';
   }
 
   function findCaptcha() {
-    const cands = [];
-    const push = (o) => { if (o && o.input && !inOwnPanel(o.input)) cands.push(o); };
+    const cands = [], seenInputs = new Set();
+    const push = (o) => {
+      if (!o || !o.input || inOwnPanel(o.input) || seenInputs.has(o.input)) return;
+      seenInputs.add(o.input);
+      cands.push(o);
+    };
 
     const box = document.getElementById('video-captcha');
-    if (box && box.children.length) {
-      push({ input: findCodeInput(box), img: firstImage(box), box, btn: findConfirm(box), score: 100, type: 'video-captcha' });
+    if (box && box.children.length && shown(box)) {
+      const input = findCodeInput(box, true) || findVisibleCodeInput(box);
+      push({ input, img: firstImage(box), box, btn: findConfirm(box), score: 100, type: 'video-captcha' });
     }
 
     // ① layui 弹窗（本平台实际形态）：只认可见的层。
@@ -471,8 +575,7 @@
     for (const layer of deepAll(document, '.layui-layer')) {
       if (inOwnPanel(layer) || !shown(layer)) continue;
       const wrap = layer.querySelector('.layui-layer-wrap') || layer;
-      const hasCodeImg = !!layer.querySelector('#codeImg, img[src*="/service/code"]');
-      if (!hasCodeImg) continue;
+      if (!hasVisibleCodeImage(layer)) continue;
       const input = findCodeInput(wrap, true) || findVisibleCodeInput(wrap);
       if (!input) continue;
       push({ input, img: firstImage(wrap), box: layer, btn: findConfirm(layer), score: 120, type: 'layui' });
@@ -480,22 +583,21 @@
     // ② 其它 layui 弹窗里带 /service/code 图的
     for (const layer of deepAll(document, LAYER_SEL)) {
       if (inOwnPanel(layer) || !shown(layer)) continue;
-      const hasCodeImg = deepAll(layer, 'img').some((im) => CODE_IMG_RE.test(im.getAttribute('src') || '') && visible(im));
-      if (!hasCodeImg) continue;
+      if (!hasVisibleCodeImage(layer)) continue;
       const input = findCodeInput(layer, true);
       if (!input) continue;
       push({ input, img: firstImage(layer), box: layer, btn: findConfirm(layer), score: 110, type: 'layui' });
     }
 
     for (const c of deepAll(document, '[class*="captcha"],[id*="captcha"],[class*="vcode"],[id*="vcode"],[class*="verify"],[id*="verify"],[class*="yzm"],[id*="yzm"]')) {
-      if (inOwnPanel(c)) continue;
+      if (inOwnPanel(c) || !shown(c)) continue;
       const input = findCodeInput(c);
       if (!input) continue;
       push({ input, img: firstImage(c), box: c, btn: findConfirm(c), score: 80, type: 'container' });
     }
     if (!cands.length) {
       for (const input of deepAll(document, 'input').filter((el) => isCodeInput(el, false))) {
-        if (inOwnPanel(input)) continue;
+        if (inOwnPanel(input) || !shown(input)) continue;
         let up = input.parentElement, depth = 0;
         while (up && depth < 3) {
           const img = firstImage(up);
@@ -514,7 +616,7 @@
   // 兜底：容器内第一个可见文本框（layui 弹窗里输入框没有任何类名/属性）
   function findVisibleCodeInput(root) {
     const list = deepAll(root, 'input').filter((el) => {
-      if (inOwnPanel(el) || !visible(el)) return false;
+      if (inOwnPanel(el) || !shown(el)) return false;
       const t = (el.type || 'text').toLowerCase();
       return !['hidden', 'checkbox', 'radio', 'submit', 'button', 'password', 'file'].includes(t);
     });
@@ -548,41 +650,70 @@
         if (b) return Promise.resolve(b);
       } else {
         return new Promise((res) => {
-          const done = () => res(draw());
-          el.addEventListener('load', done, { once: true });
-          el.addEventListener('error', () => res(''), { once: true });
-          setTimeout(done, 900);
+          let done = false, timer = 0;
+          const finish = (b) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            el.removeEventListener('load', onLoad);
+            el.removeEventListener('error', onErr);
+            res(b);
+          };
+          const onLoad = () => finish(draw());
+          const onErr = () => finish('');
+          el.addEventListener('load', onLoad);
+          el.addEventListener('error', onErr);
+          timer = setTimeout(() => finish(draw()), 900);
         }).then((b) => (b ? b : fetchB64(img.src)));
       }
     }
     return fetchB64(img.src);
   }
 
+  function blobToB64(blob) {
+    return new Promise((res) => {
+      if (!blob || typeof FileReader !== 'function') return res('');
+      try {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result || '').split(',')[1] || '');
+        fr.onerror = () => res('');
+        fr.readAsDataURL(blob);
+      } catch (e) { res(''); }
+    });
+  }
+
+  // Console 版没有 GM_xmlhttpRequest，会自动走 fetch 兜底（同源验证码图可直接取）。
   function fetchB64(src) {
     if (!src) return Promise.resolve('');
     if (String(src).startsWith('data:')) return Promise.resolve(String(src).split(',')[1] || '');
     return new Promise((res) => {
+      let settled = false;
+      const finish = (b) => {
+        if (settled) return;
+        settled = true;
+        res(b || '');
+      };
+
       if (typeof GM_xmlhttpRequest === 'function') {
-        GM_xmlhttpRequest({
-          method: 'GET', url: src, responseType: 'blob', timeout: 8000,
-          onload: (r) => {
-            const fr = new FileReader();
-            fr.onload = () => res(String(fr.result).split(',')[1] || '');
-            fr.onerror = () => res('');
-            fr.readAsDataURL(r.response);
-          },
-          onerror: () => res(''), ontimeout: () => res(''),
-        });
-      } else if (typeof fetch === 'function') {
-        fetch(src).then((r) => r.blob())
-          .then((b) => {
-            const fr = new FileReader();
-            fr.onload = () => res(String(fr.result).split(',')[1] || '');
-            fr.onerror = () => res('');
-            fr.readAsDataURL(b);
-          })
-          .catch(() => res(''));
-      } else res('');
+        try {
+          GM_xmlhttpRequest({
+            method: 'GET', url: src, responseType: 'blob', timeout: 8000,
+            onload: (r) => blobToB64(r.response).then(finish, () => finish('')),
+            onerror: () => finish(''), ontimeout: () => finish(''), onabort: () => finish(''),
+          });
+          return;
+        } catch (e) {}
+      }
+
+      if (typeof fetch === 'function') {
+        fetch(src, { cache: 'no-store' })
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then((blob) => blobToB64(blob))
+          .then(finish)
+          .catch(() => finish(''));
+        return;
+      }
+      finish('');
     });
   }
 
@@ -590,32 +721,58 @@
 
   /* ==== 7. OCR ==== */
   function ocrCandidates() {
-    const list = [CFG.ocrUrl, 'http://127.0.0.1:8899/ocr', 'http://localhost:8899/ocr',
+    const list = [state.ocrActive, CFG.ocrUrl, 'http://127.0.0.1:8899/ocr', 'http://localhost:8899/ocr',
       'http://127.0.0.1:8900/ocr', 'http://127.0.0.1:8000/ocr', 'http://127.0.0.1:5000/ocr'];
     return list.filter((v, i) => v && list.indexOf(v) === i);
   }
+  // Console 版没有 GM_xmlhttpRequest，会自动走 fetch 兜底；跨域请求 127.0.0.1
+  // 需要 OCR 服务端放行 CORS，否则会失败并回退手打。
   function httpJson(url, body, timeout) {
     return new Promise((res) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        res(result);
+      };
+      const ms = timeout || 6000;
+
       if (typeof GM_xmlhttpRequest === 'function') {
-        GM_xmlhttpRequest({
-          method: body ? 'POST' : 'GET', url,
-          headers: body ? { 'Content-Type': 'application/json' } : undefined,
-          data: body ? JSON.stringify(body) : undefined,
-          timeout: timeout || 6000,
-          onload: (r) => res({ ok: r.status >= 200 && r.status < 400, status: r.status, text: String(r.responseText || '') }),
-          onerror: () => res({ ok: false, status: 0, text: 'network error' }),
-          ontimeout: () => res({ ok: false, status: 0, text: 'timeout' }),
-        });
-      } else if (typeof fetch === 'function') {
-        const opt = body
-          ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-          : { method: 'GET' };
-        fetch(url, opt).then((r) => r.text())
-          .then((t) => res({ ok: true, status: 200, text: t }))
-          .catch((e) => res({ ok: false, status: 0, text: 'fetch error: ' + e.message }));
-      } else {
-        res({ ok: false, status: 0, text: 'no transport' });
+        try {
+          GM_xmlhttpRequest({
+            method: body ? 'POST' : 'GET', url,
+            headers: body ? { 'Content-Type': 'application/json' } : undefined,
+            data: body ? JSON.stringify(body) : undefined,
+            timeout: ms,
+            onload: (r) => finish({ ok: r.status >= 200 && r.status < 400, status: r.status, text: String(r.responseText || '') }),
+            onerror: () => finish({ ok: false, status: 0, text: 'network error' }),
+            ontimeout: () => finish({ ok: false, status: 0, text: 'timeout' }),
+            onabort: () => finish({ ok: false, status: 0, text: 'aborted' }),
+          });
+          return;
+        } catch (e) {}
       }
+
+      if (typeof fetch === 'function') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = setTimeout(() => {
+          if (controller) { try { controller.abort(); } catch (e) {} }
+          finish({ ok: false, status: 0, text: 'timeout' });
+        }, ms);
+        fetch(url, {
+          method: body ? 'POST' : 'GET',
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller ? controller.signal : undefined,
+          cache: 'no-store',
+        }).then((r) => r.text().then((text) => finish({
+          ok: r.ok, status: r.status, text: String(text || ''),
+        }))).catch((e) => finish({ ok: false, status: 0, text: String(e && e.message || 'network error') }))
+          .finally(() => clearTimeout(timer));
+        return;
+      }
+
+      finish({ ok: false, status: 0, text: 'no transport' });
     });
   }
 
@@ -623,7 +780,7 @@
     for (const url of ocrCandidates()) {
       const base = url.replace(/\/ocr\/?$/, '');
       const r = await httpJson(base + '/health', null, 2500);
-      if (r.ok && /true/.test(r.text)) {
+      if (r.ok && /(?:^|[^a-z])true(?:[^a-z]|$)/i.test(r.text)) {
         state.ocrOk = true; state.ocrActive = url; state.ocrErr = '';
         log('OCR 服务已连接：', url);
         updatePanel();
@@ -632,7 +789,8 @@
       state.ocrErr = base + ' -> ' + (r.status || r.text);
     }
     state.ocrOk = false; state.ocrActive = '';
-    warn('OCR 服务未连接。启动：双击 ocr/start-ocr.bat，然后 API.pingOcr() 重试');
+    log('本地 OCR 服务未连接（可选组件），验证码将展开手打框。启用方法见 README「验证码兜底」'
+      + (CFG.debug ? '；启动服务后执行 ' + DBG_NAME + '.pingOcr() 重试' : ''));
     updatePanel();
     return false;
   }
@@ -641,12 +799,21 @@
     if (!b64) return '';
     const url = state.ocrActive || CFG.ocrUrl;
     const r = await httpJson(url, { image: b64 }, 12000);
-    if (!r.ok) { state.ocrErr = 'HTTP ' + r.status; return ''; }
+    if (!r.ok) { state.ocrErr = 'HTTP ' + r.status + (r.text ? ' ' + r.text.slice(0, 120) : ''); return ''; }
+    let code = '';
     try {
       const j = JSON.parse(r.text);
       if (j.error) { state.ocrErr = String(j.error); return ''; }
-      return String(j.code ?? j.text ?? j.result ?? '').replace(/[^0-9a-zA-Z]/g, '');
-    } catch (e) { return String(r.text || '').replace(/[^0-9a-zA-Z]/g, '').slice(0, 8); }
+      code = String(j.code ?? j.text ?? j.result ?? '').replace(/[^0-9a-zA-Z]/g, '');
+    } catch (e) {
+      code = String(r.text || '').replace(/[^0-9a-zA-Z]/g, '').slice(0, 8);
+    }
+    if (!CODE_RE.test(code)) {
+      state.ocrErr = 'OCR 结果格式异常：' + JSON.stringify(code).slice(0, 80);
+      return '';
+    }
+    state.ocrErr = '';
+    return code;
   }
 
   function ocrTest() {
@@ -664,38 +831,514 @@
     });
   }
 
-  /* ==== 8. 填值 / 点击 / 刷新 ==== */
-  function fill(input, val) {
+  /* ==== 8. 填值 / 点击 / 刷新（真实交互链） ==== */
+
+  // ---- 8.0 事件与 DOM 工具 ----
+  const PE = window.PointerEvent || window.MouseEvent;
+
+  // 在实例上遮蔽只读 getter（KeyboardEvent 构造器忽略 keyCode/which/charCode）
+  function setEventProp(ev, name, value) {
+    try {
+      Object.defineProperty(ev, name, { configurable: true, get: () => value });
+    } catch (e) {}
+    return ev;
+  }
+
+  function nativeSetValue(input, v) {
     const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const d = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (d && d.set) d.set.call(input, val); else input.value = val;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter' }));
-    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    if (d && d.set) d.set.call(input, v);
+    else input.value = v;
   }
-  function clickIt(el) {
-    if (!el) return false;
+
+  const isAsciiPrintable = (ch) => {
+    const cp = ch.codePointAt(0);
+    return cp >= 32 && cp <= 126;
+  };
+
+  const KEY_CODE = {
+    Backquote: 192, Minus: 189, Equal: 187, BracketLeft: 219, BracketRight: 221,
+    Backslash: 220, Semicolon: 186, Quote: 222, Comma: 188, Period: 190, Slash: 191,
+  };
+  const SHIFTED_CODE = {
+    '~': 'Backquote', '!': 'Digit1', '@': 'Digit2', '#': 'Digit3', '$': 'Digit4',
+    '%': 'Digit5', '^': 'Digit6', '&': 'Digit7', '*': 'Digit8', '(': 'Digit9',
+    ')': 'Digit0', '_': 'Minus', '+': 'Equal', '{': 'BracketLeft', '}': 'BracketRight',
+    '|': 'Backslash', ':': 'Semicolon', '"': 'Quote', '<': 'Comma', '>': 'Period', '?': 'Slash',
+  };
+  const PLAIN_CODE = {
+    ' ': 'Space', '-': 'Minus', '=': 'Equal', '[': 'BracketLeft', ']': 'BracketRight',
+    '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote', ',': 'Comma', '.': 'Period',
+    '/': 'Slash', '`': 'Backquote',
+  };
+  function keyOf(ch) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 32 && cp <= 126) {
+      const isLetter = /[a-z]/i.test(ch);
+      const isDigit = /[0-9]/.test(ch);
+      const up = ch.toUpperCase();
+      const shift = /[A-Z]/.test(ch) || Object.prototype.hasOwnProperty.call(SHIFTED_CODE, ch);
+      const code = isLetter ? 'Key' + up
+        : isDigit ? 'Digit' + ch
+          : SHIFTED_CODE[ch] || PLAIN_CODE[ch] || '';
+      const keyCode = isLetter ? up.charCodeAt(0)
+        : isDigit ? cp
+          : KEY_CODE[code] || cp;
+      return {
+        key: ch, code, keyCode, which: keyCode, charCode: cp, shift,
+        shiftKey: shift, ctrlKey: false, altKey: false, metaKey: false, ime: false,
+      };
+    }
+    return {
+      key: ch, code: 'Process', keyCode: 229, which: 229, charCode: cp,
+      shift: false, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, ime: true,
+    };
+  }
+
+  function buildKeyboardInit(k, type) {
+    const mods = {
+      shiftKey: !!k.shiftKey, ctrlKey: !!k.ctrlKey, altKey: !!k.altKey, metaKey: !!k.metaKey,
+    };
+    if (type === 'keypress') {
+      return Object.assign({ key: k.key, code: k.code, keyCode: k.charCode, which: k.charCode, charCode: k.charCode }, mods);
+    }
+    return Object.assign({ key: k.key, code: k.code, keyCode: k.keyCode, which: k.which, charCode: 0 }, mods);
+  }
+
+  function mkKeyEvent(type, k, extra) {
+    const init = buildKeyboardInit(k, type);
+    const ev = new KeyboardEvent(type, Object.assign({
+      bubbles: true,
+      cancelable: type !== 'keyup',
+      composed: true,
+      view: window,
+      isComposing: false,
+      repeat: false,
+      location: 0,
+    }, init, extra || {}));
+    setEventProp(ev, 'keyCode', init.keyCode);
+    setEventProp(ev, 'which', init.which);
+    setEventProp(ev, 'charCode', init.charCode);
+    try { ev.getModifierState = (name) => name === 'Shift' ? !!k.shiftKey : false; } catch (e) {}
+    return ev;
+  }
+
+  function mkInputEvent(type, inputType, data, isComposing) {
+    let ev;
+    try {
+      ev = new InputEvent(type, {
+        bubbles: true,
+        cancelable: type === 'beforeinput',
+        composed: true,
+        view: window,
+        inputType: inputType || '',
+        data: data == null ? null : data,
+        isComposing: !!isComposing,
+      });
+    } catch (e) {
+      ev = new Event(type, { bubbles: true, cancelable: type === 'beforeinput' });
+      setEventProp(ev, 'inputType', inputType || '');
+      setEventProp(ev, 'data', data == null ? null : data);
+      setEventProp(ev, 'isComposing', !!isComposing);
+      setEventProp(ev, 'dataTransfer', null);
+      setEventProp(ev, 'targetRanges', []);
+    }
+    if (ev.inputType == null) setEventProp(ev, 'inputType', inputType || '');
+    if (ev.data === undefined) setEventProp(ev, 'data', data == null ? null : data);
+    if (ev.isComposing === undefined) setEventProp(ev, 'isComposing', !!isComposing);
+    if (!ev.targetRanges) setEventProp(ev, 'targetRanges', []);
+    return ev;
+  }
+
+  function mkCompositionEvent(type, data) {
+    try {
+      return new CompositionEvent(type, {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        data: data == null ? '' : String(data),
+      });
+    } catch (e) {
+      const ev = new Event(type, { bubbles: true, cancelable: true });
+      setEventProp(ev, 'data', data == null ? '' : String(data));
+      return ev;
+    }
+  }
+
+  const KEY_SHIFT     = { key: 'Shift',     code: 'ShiftLeft', keyCode: 16, which: 16, charCode: 0,  shift: false, ime: false };
+  const KEY_BACKSPACE = { key: 'Backspace', code: 'Backspace', keyCode: 8,  which: 8,  charCode: 0,  shift: false, ime: false };
+  const KEY_ENTER     = { key: 'Enter',     code: 'Enter',     keyCode: 13, which: 13, charCode: 13, shift: false, ime: false };
+
+  // IME 组合期间的键盘事件：keyCode/which=229，keypress charCode=0
+  function mkProcessKeyEvent(type, ch) {
+    const ev = new KeyboardEvent(type, {
+      bubbles: true,
+      cancelable: type !== 'keyup',
+      composed: true,
+      view: window,
+      key: ch || 'Process',
+      code: 'Process',
+      isComposing: type !== 'keyup',
+      repeat: false,
+      location: 0,
+    });
+    setEventProp(ev, 'keyCode', 229);
+    setEventProp(ev, 'which', 229);
+    setEventProp(ev, 'charCode', 0);
+    return ev;
+  }
+
+  // ---- 8.1 键盘事件链 ----
+  // ASCII：  [Shift down] → keydown → keypress → beforeinput(insertText)
+  //          → input(insertText) → keyup → [Shift up]
+  // IME：    compositionstart → compositionupdate → keydown(229,isComposing)
+  //          → keypress(229) → beforeinput(insertCompositionText,isComposing)
+  //          → input(insertCompositionText,isComposing) → keyup(229) → compositionend
+  //          → input(insertCompositionText,isComposing=false)  ← 真实浏览器终值确认
+  // Backspace：keydown → beforeinput(deleteContentBackward) → input(deleteContentBackward) → keyup
+  // Enter：  keydown → keypress → keyup
+  async function typeAsciiChar(input, ch) {
+    const k = keyOf(ch);
+    if (k.shift) {
+      input.dispatchEvent(mkKeyEvent('keydown', KEY_SHIFT));
+      await sleep(rand(25, 80));
+    }
+    input.dispatchEvent(mkKeyEvent('keydown', k));
+    await sleep(rand(4, 14));
+    input.dispatchEvent(mkKeyEvent('keypress', k));
+    await sleep(rand(2, 8));
+
+    const bi = mkInputEvent('beforeinput', 'insertText', ch, false);
+    const ok = input.dispatchEvent(bi);
+    if (ok) {
+      nativeSetValue(input, (input.value || '') + ch);
+      input.dispatchEvent(mkInputEvent('input', 'insertText', ch, false));
+    }
+
+    await sleep(rand(8, 30));
+    input.dispatchEvent(mkKeyEvent('keyup', k));
+    if (k.shift) {
+      await sleep(rand(15, 60));
+      input.dispatchEvent(mkKeyEvent('keyup', KEY_SHIFT));
+    }
+  }
+
+  async function typeImeChar(input, ch) {
+    input.dispatchEvent(mkCompositionEvent('compositionstart', ''));
+    await sleep(rand(20, 60));
+    input.dispatchEvent(mkCompositionEvent('compositionupdate', ch));
+    await sleep(rand(8, 30));
+
+    input.dispatchEvent(mkProcessKeyEvent('keydown', ch));
+    await sleep(rand(4, 12));
+    input.dispatchEvent(mkProcessKeyEvent('keypress', ch));
+    await sleep(rand(2, 8));
+
+    const bi = mkInputEvent('beforeinput', 'insertCompositionText', ch, true);
+    const ok = input.dispatchEvent(bi);
+    if (ok) {
+      nativeSetValue(input, (input.value || '') + ch);
+      input.dispatchEvent(mkInputEvent('input', 'insertCompositionText', ch, true));
+    }
+
+    await sleep(rand(15, 45));
+    input.dispatchEvent(mkProcessKeyEvent('keyup', ch));
+    await sleep(rand(30, 100));
+    input.dispatchEvent(mkCompositionEvent('compositionend', ch));
+
+    // 真实浏览器在 compositionend 后追加一次 input（isComposing=false）
+    await sleep(rand(0, 16));
+    if (ok) {
+      input.dispatchEvent(mkInputEvent('input', 'insertCompositionText', ch, false));
+    }
+  }
+
+  async function pressBackspace(input) {
+    input.dispatchEvent(mkKeyEvent('keydown', KEY_BACKSPACE));
+    await sleep(rand(3, 10));
+
+    const bi = mkInputEvent('beforeinput', 'deleteContentBackward', null, false);
+    const ok = input.dispatchEvent(bi);
+    if (ok) {
+      const v = input.value || '';
+      nativeSetValue(input, v.slice(0, Math.max(0, v.length - 1)));
+      input.dispatchEvent(mkInputEvent('input', 'deleteContentBackward', null, false));
+    }
+
+    await sleep(rand(8, 30));
+    input.dispatchEvent(mkKeyEvent('keyup', KEY_BACKSPACE));
+  }
+
+  async function pressEnter(input) {
+    input.dispatchEvent(mkKeyEvent('keydown', KEY_ENTER));
+    await sleep(rand(3, 10));
+    input.dispatchEvent(mkKeyEvent('keypress', KEY_ENTER));
+    await sleep(rand(5, 20));
+    input.dispatchEvent(mkKeyEvent('keyup', KEY_ENTER));
+  }
+
+  // ---- 8.2 填值 ----
+  async function fill(input, val) {
+    if (!input) return;
+    // 真人是先用鼠标点一下输入框（pointerdown / mousedown → 聚焦 → click），不是凭空 focus()
+    if (!(await clickIt(input))) { try { input.focus({ preventScroll: true }); } catch (e) {} }
+    await sleep(rand(40, 120));
+
+    // 清空已有内容：逐个 Backspace，走完整 beforeinput/input 链
+    const existing = String(input.value || '');
+    for (let i = 0; i < existing.length; i++) {
+      await pressBackspace(input);
+      await sleep(rand(20, 60));
+    }
+
+    let typos = 0;
+    const text = String(val || '');
+    for (const ch of text) {
+      // 偶发手滑：先打错一个字符 → 停顿 → Backspace 修正（每次填码最多 2 次）
+      if (typos < 2 && ch !== ' ' && Math.random() < 0.05) {
+        typos++;
+        const pool = 'abcdefghjkmnpqrstuvwxyz23456789';
+        const wrong = pool[Math.floor(rand(0, pool.length))];
+        if (isAsciiPrintable(wrong)) await typeAsciiChar(input, wrong);
+        else await typeImeChar(input, wrong);
+        await sleep(rand(250, 700));
+        await pressBackspace(input);
+        await sleep(rand(120, 400));
+      }
+
+      if (isAsciiPrintable(ch)) await typeAsciiChar(input, ch);
+      else await typeImeChar(input, ch);
+      await sleep(rand(70, 320));
+    }
+    typedInputs.add(input);
+  }
+
+  // ---- 8.3 指针事件链 ----
+  let mouseAt = { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight / 2) };
+  let lastPointerTarget = null;
+
+  const bezier1D = (p0, p1, p2, p3, t) => {
+    const mt = 1 - t;
+    return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
+  };
+  const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+  function makePointerMove(x, y, mx, my) {
+    const init = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      movementX: mx, movementY: my,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true,
+      button: -1, buttons: 0,
+    };
+    const ev = new PE('pointermove', init);
+
+    // coalesced events：在相邻两个 pointermove 之间插入子样本
+    const sub = 2 + Math.floor(rand(0, 3));
+    const coalesced = [];
+    for (let j = 1; j <= sub; j++) {
+      const f = j / (sub + 1);
+      const cx = Math.round(x - mx * (1 - f));
+      const cy = Math.round(y - my * (1 - f));
+      coalesced.push(new PE('pointermove', Object.assign({}, init, {
+        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+        movementX: Math.round(mx / (sub + 1)),
+        movementY: Math.round(my / (sub + 1)),
+      })));
+    }
+    try {
+      ev.getCoalescedEvents = () => coalesced;
+      ev.getPredictedEvents = () => [];
+    } catch (e) {}
+    return ev;
+  }
+
+  function mkMouseMove(x, y, mx, my) {
+    return new MouseEvent('mousemove', {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      movementX: mx, movementY: my, button: -1, buttons: 0,
+    });
+  }
+
+  function commonAncestor(a, b) {
+    for (let n = a; n; n = n.parentElement) if (n === b || n.contains(b)) return n;
+    return null;
+  }
+
+  // 指针换目标时的 hover 事件链，顺序同浏览器：out / leave（旧目标）→ over / enter（新目标）
+  function dispatchHover(from, to, x, y) {
+    const init = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true, button: -1, buttons: 0,
+    };
+    const stop = from && to ? commonAncestor(from, to) : null;
+    const local = Object.assign({}, init, { bubbles: false, relatedTarget: null });
+    if (from) {
+      const out = Object.assign({}, init, { relatedTarget: to });
+      from.dispatchEvent(new PE('pointerout', out));
+      from.dispatchEvent(new MouseEvent('mouseout', out));
+      for (let n = from; n && n !== stop; n = n.parentElement) {
+        n.dispatchEvent(new PE('pointerleave', local));
+        n.dispatchEvent(new MouseEvent('mouseleave', local));
+      }
+    }
+    if (to) {
+      const over = Object.assign({}, init, { relatedTarget: from });
+      to.dispatchEvent(new PE('pointerover', over));
+      to.dispatchEvent(new MouseEvent('mouseover', over));
+      const chain = [];
+      for (let n = to; n && n !== stop; n = n.parentElement) chain.push(n);
+      for (let i = chain.length - 1; i >= 0; i--) {
+        chain[i].dispatchEvent(new PE('pointerenter', local));
+        chain[i].dispatchEvent(new MouseEvent('mouseenter', local));
+      }
+    }
+  }
+
+  function dispatchPointerMove(ev) {
+    const at = (e) => {
+      try { return document.elementFromPoint(e.clientX, e.clientY); } catch (err) {}
+      return null;
+    };
+    // 真实鼠标每个采样点都有 mousemove，最后一个采样点再跟一个 pointermove
+    let samples = [];
+    try { samples = ev.getCoalescedEvents() || []; } catch (e) {}
+    for (const c of samples) {
+      try { (at(c) || document).dispatchEvent(mkMouseMove(c.clientX, c.clientY, c.movementX, c.movementY)); } catch (e) {}
+    }
+    const target = at(ev);
+    const prev = lastPointerTarget;
+    if (prev !== target && (!prev || prev.isConnected)) dispatchHover(prev, target, ev.clientX, ev.clientY);
+    (target || document).dispatchEvent(ev);
+    (target || document).dispatchEvent(mkMouseMove(ev.clientX, ev.clientY, ev.movementX, ev.movementY));
+    lastPointerTarget = target;
+  }
+
+  async function movePointerTo(tx, ty) {
+    const sx = mouseAt.x, sy = mouseAt.y;
+    const dx = tx - sx, dy = ty - sy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.5) return;
+
+    // 垂直方向随机弯曲，形成自然弧线
+    const px = dist ? -dy / dist : 0;
+    const py = dist ? dx / dist : 0;
+    const bow = rand(-0.1, 0.1) * dist;
+    const c1 = { x: sx + dx * 0.33 + px * bow, y: sy + dy * 0.33 + py * bow };
+    const c2 = { x: sx + dx * 0.66 + px * bow, y: sy + dy * 0.66 + py * bow };
+
+    const steps = Math.max(6, Math.min(40, Math.round(dist / 12))) + Math.floor(rand(0, 5));
+    let lastX = sx, lastY = sy;
+    for (let i = 1; i <= steps; i++) {
+      const t = easeInOutCubic(i / steps);
+      const nx = bezier1D(sx, c1.x, c2.x, tx, t) + rand(-1.2, 1.2);
+      const ny = bezier1D(sy, c1.y, c2.y, ty, t) + rand(-1.2, 1.2);
+      const cx = Math.round(nx), cy = Math.round(ny);
+      const mx = cx - lastX, my = cy - lastY;
+      lastX = cx; lastY = cy;
+      dispatchPointerMove(makePointerMove(cx, cy, mx, my));
+      await sleep(rand(7, 18));
+    }
+    mouseAt = { x: tx, y: ty };
+  }
+
+  // ---- 8.4 点击 ----
+  async function clickIt(el) {
+    if (!el || el.disabled || !visible(el)) return false;
     try {
       el.scrollIntoView({ block: 'center' });
+      await sleep(rand(150, 500));
+      // 等待期间弹窗可能已关闭/按钮已重绘，避免对已脱离 DOM 的节点发事件。
+      if (el.isConnected === false || el.disabled || !visible(el)) return false;
+
       const r = el.getBoundingClientRect();
-      const o = { bubbles: true, cancelable: true, composed: true, view: window,
-        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
-      const P = window.PointerEvent || MouseEvent;
-      el.dispatchEvent(new P('pointerdown', o));
-      el.dispatchEvent(new MouseEvent('mousedown', o));
-      el.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
-      el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
+      const tx = Math.round(r.left + r.width * rand(0.25, 0.75));
+      const ty = Math.round(r.top + r.height * rand(0.25, 0.75));
+
+      // 1) 带轨迹移动到落点
+      await movePointerTo(tx, ty);
+
+      // 2) 落点附近的最后一次微移动（pointermove + mousemove，保证 pointerdown 前有移动）
+      const jx = Math.round(tx + rand(-2, 2)), jy = Math.round(ty + rand(-2, 2));
+      el.dispatchEvent(makePointerMove(jx, jy, jx - tx, jy - ty));
+      el.dispatchEvent(mkMouseMove(jx, jy, jx - tx, jy - ty));
+      await sleep(rand(20, 60));
+
+      // 3) pointerdown → mousedown
+      const downInit = {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: jx, clientY: jy, screenX: jx, screenY: jy,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true,
+        button: 0, buttons: 1,
+      };
+      el.dispatchEvent(new PE('pointerdown', downInit));
+      el.dispatchEvent(new MouseEvent('mousedown', downInit));
+      // mousedown 的默认行为是转移焦点：上一个聚焦元素（如验证码输入框）会按真实顺序
+      // 收到 change → blur → focusout，按钮收到 focus → focusin
+      transferFocus(el);
+      await sleep(rand(45, 150));
+
+      // 4) pointerup → mouseup
+      const upInit = Object.assign({}, downInit, { buttons: 0 });
+      el.dispatchEvent(new PE('pointerup', upInit));
+      el.dispatchEvent(new MouseEvent('mouseup', upInit));
+      await sleep(rand(10, 40));
+      if (el.isConnected === false || el.disabled) return false;
+
+      // 5) click：用原生 click 保留默认行为（表单提交 / 导航等）
       el.click();
       return true;
     } catch (e) { return false; }
   }
-  function refreshCaptcha(box) {
+
+  const typedInputs = new WeakSet();   // 被脚本逐字键入过的输入框：失焦时才补 change
+
+  // 焦点转移交给浏览器原生执行；页面没有系统焦点时（后台窗口 / 失活的标签页）浏览器不派发
+  // 聚焦与失焦事件，这里把没触发的按真实顺序补上，保证任何状态下事件序列都一致且不重复。
+  function transferFocus(el) {
+    const prev = document.activeElement;
+    if (!el || !prev || prev === el || prev.nodeType !== 1) return;
+    const seen = {};
+    const on = (e) => { seen[e.type] = true; };
+    const onPrev = ['change', 'blur', 'focusout'], onEl = ['focus', 'focusin'];
+    onPrev.forEach((t) => prev.addEventListener(t, on));
+    onEl.forEach((t) => el.addEventListener(t, on));
+    try { el.focus({ preventScroll: true }); } catch (e) {}
+    // 点在不可聚焦的元素上：真实行为是焦点回到 body
+    const toBody = document.activeElement === prev;
+    if (toBody) { try { prev.blur(); } catch (e) {} }
+    onPrev.forEach((t) => prev.removeEventListener(t, on));
+    onEl.forEach((t) => el.removeEventListener(t, on));
+
+    if (prev !== document.body && prev !== document.documentElement) {
+      if (/^(INPUT|TEXTAREA)$/.test(prev.tagName) && typedInputs.has(prev) && !seen.change) {
+        prev.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (!seen.blur) prev.dispatchEvent(new FocusEvent('blur', { composed: true, view: window }));
+      if (!seen.focusout) {
+        prev.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, view: window, relatedTarget: toBody ? null : el }));
+      }
+    }
+    typedInputs.delete(prev);
+    if (!toBody) {
+      if (!seen.focus) el.dispatchEvent(new FocusEvent('focus', { composed: true, view: window }));
+      if (!seen.focusin) {
+        el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true, view: window, relatedTarget: prev }));
+      }
+    }
+  }
+
+  async function refreshCaptcha(box) {
     const btn = deepAll(box, 'a,button,span,i,img').find((el) => /(换一张|刷新|看不清|点击刷新)/.test(clean(el.textContent || '')) && visible(el));
-    if (btn) { clickIt(btn); return '点击换图'; }
+    if (btn) {
+      await clickIt(btn);
+      await sleep(rand(300, 700));
+      return '点击换图';
+    }
     const img = (firstImage(box) || {}).el;
     if (img && img.src) {
       img.src = img.src.replace(/[?&]t=\d+/, '') + (img.src.includes('?') ? '&' : '?') + 't=' + Date.now();
+      await waitImageLoaded(img, 2500);
       return '刷新图片';
     }
     return '无刷新控件';
@@ -704,410 +1347,342 @@
   /* ==== 9. 手打兜底 ==== */
   function showManual(reason, b64) {
     state.status = '需手打验证码' + (reason ? '（' + reason + '）' : '');
-    const row = document.getElementById(MID);
-    if (!row) return;
+    capManual = true;
+    capToken++;                       // 取消仍在等待中的自动识别流程
+    if (b64) {
+      state.capB64 = b64;
+      state.capSig = sigOf(b64);
+    } else {
+      state.capB64 = '';
+      state.capSig = '';
+    }
+    const panel = document.getElementById(ID.panel);
+    if (panel) {
+      panel.classList.remove(K + '-collapsed');
+      if (CFG.hidePanel) { CFG.hidePanel = false; save(); }
+    }
+    const row = document.getElementById(ID.manual);
+    if (!row) { capManual = false; return; }
     row.style.display = 'block';
-    const prev = document.getElementById(PREVID);
+    const prev = document.getElementById(ID.prev);
     if (prev) {
       if (b64) { prev.src = 'data:image/png;base64,' + b64; prev.style.display = 'block'; }
       else prev.style.display = 'none';
     }
-    const inp = document.getElementById(INID);
+    const inp = document.getElementById(ID.min);
     if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
     updatePanel();
   }
   function hideManual() {
-    const row = document.getElementById(MID);
+    capManual = false;
+    const row = document.getElementById(ID.manual);
     if (row) row.style.display = 'none';
   }
+
   // 把验证码写进所有相关输入框（可见框 + 隐藏的 #yzCode），并触发平台监听
-  async function typeLikeHuman(inp, text) {
-    const a = Math.max(0, Number(CFG.typeMin) || 70);
-    const b = Math.max(a, Number(CFG.typeMax) || a + 120);
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      const k = { key: ch, keyCode: ch.toUpperCase().charCodeAt(0), which: ch.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true };
-      try {
-        inp.dispatchEvent(new KeyboardEvent('keydown', k));
-        inp.dispatchEvent(new KeyboardEvent('keypress', k));
-        inp.value = text.slice(0, i + 1);
-        inp.dispatchEvent(new Event('input', { bubbles: true }));
-        inp.dispatchEvent(new KeyboardEvent('keyup', k));
-      } catch (e) {}
-      await sleep(a + Math.random() * (b - a));
-    }
-  }
-
-  // 把一个值写进任意输入框（原生 setter，确保框架能感知）
-  function writeValue(el, text) {
-    try {
-      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const d = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (d && d.set) d.set.call(el, text); else el.value = text;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    } catch (e) { return false; }
-  }
-
-  // 验证码层里所有"可能被平台读取"的文本框
-  function codeTargets(cap) {
-    const out = [];
-    const push = (el) => {
-      if (!el || out.indexOf(el) >= 0 || inOwnPanel(el)) return;
-      const t = (el.type || 'text').toLowerCase();
-      if (['hidden', 'checkbox', 'radio', 'submit', 'button', 'file', 'range', 'color'].includes(t)) return;
-      out.push(el);
-    };
-    const box = (cap.input && cap.input.closest && cap.input.closest('.layui-layer')) || cap.box || document;
-    push(cap.input);
-    try {
-      deepAll(box, 'input,textarea').forEach(push);      // 可见框、隐藏 #yzCode、其它兄弟框
-    } catch (e) {}
-    try {
-      for (const id of ['yzCode', 'code', 'vcode', 'captcha']) {
-        const el = document.getElementById(id);
-        if (el) push(el);
-      }
-    } catch (e) {}
-    return out;
-  }
-
   async function fillAll(cap, code) {
-    const targets = codeTargets(cap);
-    if (!targets.length) {
-      warn('填值失败：在验证码层里没找到任何输入框');
-      return false;
-    }
-    const inp = cap.input && targets.indexOf(cap.input) >= 0 ? cap.input : targets[0];
-
+    try { await fill(cap.input, code); } catch (e) {}
     try {
-      // 1) 主输入框：人类化——鼠标事件 + 逐字符键入
-      if (CFG.humanFill && visible(inp)) {
-        const r = inp.getBoundingClientRect();
-        const o = { bubbles: true, cancelable: true, composed: true, view: window,
-          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
-        const P = window.PointerEvent || MouseEvent;
-        inp.dispatchEvent(new P('pointerdown', o));
-        inp.dispatchEvent(new MouseEvent('mousedown', o));
-        inp.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
-        inp.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
-        try { inp.focus(); } catch (e) {}
-        await typeLikeHuman(inp, code);
-      } else {
-        writeValue(inp, code);
-      }
-
-      // 2) 其余框（隐藏 #yzCode 等）直接写，平台可能从它们取值
-      let extra = 0;
-      for (const el of targets) {
-        if (el === inp) continue;
-        if (String(el.value || '') === code) continue;
-        if (writeValue(el, code)) extra++;
-      }
-
-      // 3) 校验：至少一个框里真的有值，否则用原生 setter 再硬写一遍
-      const okNow = targets.some((el) => String(el.value || '').trim() === code);
-      if (!okNow) {
-        targets.forEach((el) => writeValue(el, code));
-      }
-      const filled = targets.filter((el) => String(el.value || '').trim() === code);
-      log('填值结果', {
-        目标: filled.map((el) => (el.id || el.name || el.type || el.tagName)),
-        值: code,
-        主框: (inp.id || inp.name || inp.tagName),
-        额外写入: extra,
-        成功: filled.length > 0,
-      });
-      if (!filled.length) warn('填值未生效：所有目标框仍为空，检查是否 readonly/被框架管控');
-      return filled.length > 0;
-    } catch (e) {
-      warn('填值异常', e);
-      return false;
-    }
-  }
-
-  // 提交：多策略连发，每一步都校验弹窗是否关闭，哪个成了记日志
-  // 关掉平台自己弹的提示框（请输入验证码 / 验证码错误 …）；只处理纯提示层，不碰验证码本体
-  function dismissNag() {
-    let n = 0;
-    try {
-      for (const lay of document.querySelectorAll('.layui-layer')) {
-        if (inOwnPanel(lay) || !shown(lay)) continue;
-        if (lay.querySelector('#codeImg, img[src*="/service/code"], input:not([type="hidden"])')) continue;
-        const txt = clean(lay.textContent || '');
-        if (!/请输入验证码|验证码错误|验证码不正确|请重新输入|网络课程出现问题/.test(txt)) continue;
-        const btn = lay.querySelector('.layui-layer-btn0') || lay.querySelector('.layui-layer-btn a');
-        if (btn) { clickIt(btn); n++; }
+      const yz = document.getElementById('yzCode');
+      if (yz && yz !== cap.input) {
+        const isEditable = (yz.tagName === 'INPUT' || yz.tagName === 'TEXTAREA') && visible(yz);
+        if (isEditable) {
+          await fill(yz, code);          // 可见框走完整 beforeinput 链
+        } else {
+          nativeSetValue(yz, code);
+          yz.dispatchEvent(new Event('input', { bubbles: true }));
+          yz.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
     } catch (e) {}
-    if (n) log('已关闭平台提示框 ×' + n + '，继续处理验证码');
-    return n;
+    return code;
   }
 
-  // 验证码层里所有"可能被平台读取"的文本框
-  function codeTargets(cap) {
-    const out = [];
-    const push = (el) => {
-      if (!el || out.indexOf(el) >= 0 || inOwnPanel(el)) return;
-      const t = (el.type || 'text').toLowerCase();
-      if (['hidden', 'checkbox', 'radio', 'submit', 'button', 'file', 'range', 'color'].includes(t)) return;
-      out.push(el);
+  // 轮询等待验证码弹窗关闭（每 180ms 检查一次，最长 timeout 毫秒）
+  async function waitCaptchaClosed(timeout) {
+    const start = Date.now();
+    for (;;) {
+      if (!captchaHint(true)) return true;
+      if (Date.now() - start > (timeout || 1500)) return false;
+      await sleep(180);
+    }
+  }
+
+  // 等待 <img> 加载完成（含错误处理），返回是否成功
+  function waitImageLoaded(el, timeout) {
+    return new Promise((resolve) => {
+      if (!el || el.tagName !== 'IMG') return resolve(false);
+      if (el.complete && el.naturalWidth > 0) return resolve(true);
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try { el.removeEventListener('load', onLoad); el.removeEventListener('error', onErr); } catch (e) {}
+        resolve(ok);
+      };
+      const onLoad = () => finish(true);
+      const onErr = () => finish(false);
+      const timer = setTimeout(() => finish(el.complete && el.naturalWidth > 0), timeout || 2500);
+      try {
+        el.addEventListener('load', onLoad, { once: true });
+        el.addEventListener('error', onErr, { once: true });
+      } catch (e) { finish(false); }
+    });
+  }
+
+  // 模拟"看到验证码后定睛观察"的准备延迟：整体定睛 + 逐字符扫视
+  function humanReadDelay(codeLen) {
+    const len = Math.max(3, Math.min(6, Number(codeLen) || 4));
+    const look = rand(900, 1900);
+    const perChar = rand(55, 145) * len;
+    return Math.round(look + perChar);
+  }
+
+  // 提交按钮安全判定：防止误点页面其它"确定/关闭"按钮
+  function isButtonSafe(el, expectedText) {
+    if (!el || el.isConnected === false || !shown(el) || el.disabled ||
+        el.getAttribute('aria-disabled') === 'true') return false;
+    const label = clean(el.textContent || el.value || '');
+    if (expectedText) return expectedText.test(label);
+    return /^(确定|确认|提交|验证|继续|开始播放|继续播放|开始学习|进入学习|播放|OK|下一节|下一步)$/.test(label);
+  }
+
+  // 提交：多策略连发，每策略后轮询等待弹窗关闭
+  async function submitCode(cap, guard) {
+    const open = () => captchaHint(true);
+    const inCapBox = (btn) => {
+      if (!btn) return false;
+      if (cap.box && cap.box.contains(btn)) return true;
+      const layer = btn.closest && btn.closest('.layui-layer');
+      return !!(layer && cap.input && layer.contains(cap.input));
     };
-    const box = (cap && cap.input && cap.input.closest && cap.input.closest('.layui-layer')) || (cap && cap.box) || document;
-    if (cap && cap.input) push(cap.input);
-    try { deepAll(box, 'input,textarea').forEach(push); } catch (e) {}
-    try {
-      for (const id of ['yzCode', 'code', 'vcode', 'captcha']) {
-        const el = document.getElementById(id);
-        if (el) push(el);
-      }
-    } catch (e) {}
-    if (!out.length) { try { deepAll(document, 'input,textarea').forEach(push); } catch (e) {} }
-    return out;
-  }
 
-  // —— 目标框：一次解析，整轮复用（避免每次重新定位到不同元素） ——
-  function pickTargets(cap) {
-    const alive = (cap && Array.isArray(cap.targets)) ? cap.targets.filter((el) => el && el.isConnected !== false) : [];
-    if (alive.length) return alive;
-    const list = codeTargets(cap);
-    if (cap) cap.targets = list;
-    return list;
-  }
-
-  function anyValue(cap, code) {
-    return pickTargets(cap).some((el) => String(el.value || '').trim() === code);
-  }
-
-  const inputProto = (el) => (el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype);
-
-  // 三种写法依次尝试，每种写完立刻校验；返回 0/1/2=成功的写法，-1=全失败
-  function setVal(el, text) {
-    const tries = [
-      () => {
-        const d = Object.getOwnPropertyDescriptor(inputProto(el), 'value');
-        if (d && d.set) d.set.call(el, text); else el.value = text;
-      },
-      () => {
-        if (window.$ && typeof window.$ === 'function') window.$(el).val(text);
-        else el.value = text;
-      },
-      () => {
-        try { el.focus(); if (el.setSelectionRange) el.setSelectionRange(0, String(el.value || '').length); } catch (e) {}
-        try {
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, text);
-        } catch (e) {}
-        if (String(el.value || '') !== text) el.value = text;
-      },
-    ];
-    for (let i = 0; i < tries.length; i++) {
-      try { tries[i](); } catch (e) {}
-      try {
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        if (window.$ && typeof window.$ === 'function') window.$(el).trigger('input').trigger('change');
-      } catch (e) {}
-      if (String(el.value || '') === text) return i;
-    }
-    return -1;
-  }
-
-  async function fillAll(cap, code) {
-    const targets = pickTargets(cap);
-    if (!targets.length) {
-      warn('填值失败：层里没找到任何输入框');
-      return false;
-    }
-    const primary = (cap.input && targets.indexOf(cap.input) >= 0 && visible(cap.input))
-      ? cap.input
-      : (targets.find((el) => visible(el)) || targets[0]);
-
-    const detail = [];
-    // 1) 主框：人类化（鼠标事件 + 逐字符）
-    if (CFG.humanFill && visible(primary)) {
-      try {
-        const r = primary.getBoundingClientRect();
-        const o = { bubbles: true, cancelable: true, composed: true, view: window,
-          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
-        const P = window.PointerEvent || MouseEvent;
-        primary.dispatchEvent(new P('pointerdown', o));
-        primary.dispatchEvent(new MouseEvent('mousedown', o));
-        primary.dispatchEvent(new P('pointerup', Object.assign({}, o, { buttons: 0 })));
-        primary.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, o, { buttons: 0 })));
-        try { primary.focus(); } catch (e) {}
-        await typeLikeHuman(primary, code);
-      } catch (e) {}
-    }
-
-    // 2) 全部框逐个写入并校验（主框若已成功，仍会再写一次，成本可忽略）
-    for (const el of targets) {
-      const before = String(el.value || '');
-      let used = String(before) === code ? 'had' : null;
-      if (used !== 'had') used = setVal(el, code);
-      detail.push({
-        框: el.id || el.name || el.type || el.tagName,
-        显示: visible(el) ? 'Y' : 'N',
-        写前: before,
-        写后: String(el.value || ''),
-        写法: used === 'had' ? '已有' : used,
-      });
-    }
-
-    const ok = targets.some((el) => String(el.value || '').trim() === code);
-    try { console.table(detail); } catch (e) {}
-    log('填值结果', { 成功: ok, 目标数: targets.length, 主框: primary.id || primary.tagName });
-    if (!ok) {
-      warn('三种写法都写不进去：可能是 readonly / 被框架接管 / 输入框在 iframe 内');
-      state.status = '识别成功但写不进输入框，转手打';
-      showManual('自动填写未生效', state.capB64);
-    }
-    return ok;
-  }
-
-  // 提交：确认框里有值 → 立刻点「开始播放」；点不动再走后备
-  async function submitCode(cap, code) {
-    code = code || String((pickTargets(cap)[0] || {}).value || '');
-    const open = () => captchaHint();
-    const pressEnter = (el) => {
-      if (!el) return false;
-      const opt = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-      try {
-        el.dispatchEvent(new KeyboardEvent('keydown', opt));
-        el.dispatchEvent(new KeyboardEvent('keypress', opt));
-        el.dispatchEvent(new KeyboardEvent('keyup', opt));
-        return true;
-      } catch (e) { return false; }
+    // 同一个按钮只点一次：服务端校验稍慢就连点同一个按钮，是最扎眼的异常
+    const clicked = new Set();
+    const clickOnce = async (btn) => {
+      if (!btn) return false;
+      if (clicked.has(btn)) return 'dup';
+      const ok = await clickIt(btn);
+      if (ok) clicked.add(btn);
+      return ok;
     };
 
     const strategies = [
-      ['layer-btn0', () => {
-        const layer = (cap.box && cap.box.querySelector) ? cap.box : document;
-        const btn = layer.querySelector('.layui-layer-btn0') || document.querySelector('.layui-layer-btn0');
-        return clickIt(btn);
+      ['layer-btn0', async () => {
+        const layer = cap.input && cap.input.closest && cap.input.closest('.layui-layer');
+        if (!layer) return false;
+        const btn = layer.querySelector('.layui-layer-btn0');
+        if (!isButtonSafe(btn) || !inCapBox(btn)) return false;
+        return await clickOnce(btn);
       }],
-      ['cap.btn', () => clickIt(cap.btn)],
-      ['findConfirm', () => clickIt(findConfirm(cap.box || document))],
-      ['Enter', () => pressEnter(cap.input) || pressEnter(document.getElementById('yzCode'))],
-      ['layer-btn-any', () => {
-        const btns = Array.from(document.querySelectorAll('.layui-layer .layui-layer-btn a, .layui-layer-btn a')).filter((el) => visible(el));
+      ['cap.btn', async () => {
+        if (!isButtonSafe(cap.btn, /^(确定|确认|提交|验证|继续|开始播放|继续播放|开始学习|进入学习|播放|OK)$/)) return false;
+        return await clickOnce(cap.btn);
+      }],
+      ['findConfirm', async () => {
+        const btn = findConfirm(cap.box || document);
+        if (!isButtonSafe(btn)) return false;
+        return await clickOnce(btn);
+      }],
+      ['Enter', async () => {
+        const t = cap.input || document.getElementById('yzCode');
+        if (!t) return false;
+        try { if (visible(t)) t.focus(); } catch (e) {}
+        await sleep(rand(40, 120));
+        await pressEnter(t);
+        return true;
+      }],
+      ['layer-btn-any', async () => {
+        const btns = Array.from(document.querySelectorAll('.layui-layer .layui-layer-btn a, .layui-layer-btn a'))
+          .filter((el) => visible(el) && inCapBox(el));
         const first = btns.find((el) => /开始播放|确定|确认|提交|验证|继续/.test(clean(el.textContent)));
-        return clickIt(first || btns[0]);
+        if (!first) return false;
+        return await clickOnce(first);
       }],
       ['form-submit', () => {
-        const form = cap.input && (cap.input.form || (cap.input.closest && cap.input.closest('form')));
-        if (!form) return false;
-        try { form.requestSubmit ? form.requestSubmit() : form.submit(); return true; } catch (e) { return false; }
+        const form = cap.input.form || (cap.input.closest && cap.input.closest('form'));
+        if (!form || typeof form.requestSubmit !== 'function') return false;
+        // 不要退回 form.submit()：它会绕过 submit 监听器，可能直接刷新页面丢状态。
+        try { form.requestSubmit(); return true; } catch (e) { return false; }
       }],
     ];
 
     for (const [name, fn] of strategies) {
-      dismissNag();
+      if (guard && !guard()) return { ok: false, by: 'cancelled' };
       if (!open()) return { ok: true, by: name + '（已经关闭）' };
-
-      // 点之前确认框里有值；没有就先补写，补不进去就别点（空点会弹「请输入验证码」）
-      if (!anyValue(cap, code)) {
-        const okFill = await fillAll(cap, code);
-        await sleep(150);
-        if (!okFill && !anyValue(cap, code)) {
-          log('输入框仍为空，暂不提交：' + name);
-          await sleep(300);
-          continue;
-        }
-      }
-
       let did = false;
-      try { did = !!fn(); } catch (e) { did = false; }
+      try { did = await fn(); } catch (e) { did = false; }
+      if (did === 'dup') { log('提交策略', name, '与前面是同一个按钮，跳过'); continue; }
       if (!did) { log('提交策略', name, '不可用'); continue; }
-      await sleep(700);
-      const still = open();
-      log('提交策略', name, still ? '弹窗仍在' : '弹窗已关闭 ✓');
-      if (!still) return { ok: true, by: name };
+      // 校验接口慢的时候别急着换下一种提交方式，多等一会儿
+      const closed = await waitCaptchaClosed(4000);
+      log('提交策略', name, closed ? '弹窗已关闭 ✓' : '弹窗仍在');
+      if (closed) return { ok: true, by: name };
     }
     return { ok: !open(), by: 'none' };
   }
 
   async function submitManual() {
-    const inp = document.getElementById(INID);
-    const code = (inp && inp.value || '').trim();
-    const cap = findCaptcha();
-    if (!cap || !code) return;
-    const now = await captureB64(cap.img);
-    const sig = sigOf(now);
-    if (state.capSig && sig && sig !== state.capSig) {
-      state.capSig = sig; state.capB64 = now;
-      showManual('图片已刷新，请重新输入', now);
-      return;
+    if (capBusy) {
+      state.status = '自动识别正在进行，请稍候再手打提交';
+      updatePanel();
+      return false;
     }
-    const filled = await fillAll(cap, code);
-    if (!filled) { warn('手打的值也没写进输入框'); return; }
-    hideManual();
-    state.status = '已提交手打验证码 ' + code + '，校验中…';
-    const r = await submitCode(cap);
-    state.status = r.ok ? '验证码通过 ✓ 继续播放' : '提交未生效（' + r.by + '），请手动点「开始播放」';
-    if (r.ok) { state.capPassAt = Date.now(); resume(); }
-    else warn(state.status);
-  }
-  function checkCaptchaCleared() {
-    if (!captchaHint()) {
-      state.status = '验证码已通过，继续播放';
-      state.capPassAt = Date.now();
-      hideManual();
-      resume();
+    const inp = document.getElementById(ID.min);
+    const raw = String((inp && inp.value) || '').trim();
+    const code = raw.replace(/[^0-9A-Za-z]/g, '').slice(0, 8);
+    if (inp && inp.value !== code) inp.value = code;
+    const cap = findCaptcha();
+    if (!cap || !code) {
+      state.status = !cap ? '验证码弹窗已消失' : '请输入验证码';
+      updatePanel();
+      return false;
+    }
+
+    const token = ++capToken;          // 取消仍在等待中的自动识别流程
+    capManual = true;
+    capBusy = true;
+    try {
+      const now = await captureB64(cap.img);
+      if (token !== capToken || !CFG.enabled) return false;
+      const sig = sigOf(now);
+      if (state.capSig && sig && sig !== state.capSig) {
+        showManual('图片已刷新，请重新输入', now);
+        return false;
+      }
+      await fillAll(cap, code);
+      if (token !== capToken || !CFG.enabled) return false;
+      state.status = '已提交手打验证码 ' + code + '，校验中…';
+      updatePanel();
+      const r = await submitCode(cap, () => CFG.enabled);
+      state.status = r.ok
+        ? '验证码通过 ✓ 继续播放'
+        : '提交未生效（' + r.by + '），请调整后重试';
+      if (r.ok) {
+        state.capPassAt = Date.now();
+        resetCapAttempts();
+        hideManual();
+        resume();
+      } else {
+        warn(state.status);
+      }
+      return r.ok;
+    } catch (e) {
+      warn('手打提交异常', e);
+      return false;
+    } finally {
+      capBusy = false;
+      updatePanel();
     }
   }
   function resume() {
     const v = player();
     if (!v || !CFG.enabled) return;
-    try { v.muted = CFG.muted; v.playbackRate = CFG.rate; v.play().catch(() => {}); } catch (e) {}
+    try { v.muted = CFG.muted; v.play().catch(() => {}); } catch (e) {}
   }
 
   /* ==== 10. 自动识别 ==== */
-  async function solveCaptcha() {
-    if (!CFG.enabled || !CFG.solveCaptcha || capBusy) return;
-    const cap = findCaptcha();
-    if (!cap) return;
+  function captchaVariants(text) {
+    const list = [];
+    const add = (v) => {
+      v = String(v || '');
+      if (v && list.indexOf(v) < 0) list.push(v);
+    };
+    add(text);
+    if (CFG.capCaseTry && /[a-zA-Z]/.test(text)) {
+      add(text.toLowerCase());
+      add(text.toUpperCase());
+      add(text.toLowerCase().replace(/^([a-z])/, (m) => m.toUpperCase()));
+    }
+    return list;
+  }
 
-    const key = (cap.img ? cap.img.src : 'noimg') + '|' + cap.type + '|' +
-      ((cap.box && (cap.box.id || cap.box.className)) || '') + '|' + currentNodeId();
-    if (key !== capKey) { capAttempt = 0; capKey = key; }
-    else if (Date.now() - capAt < 5000) return;
+  async function solveCaptcha(presetCap) {
+    if (!capFlowActive() || capBusy) return false;
+    const cap = presetCap || findCaptcha();
+    if (!cap) return false;
 
-    capBusy = true;
+    const token = ++capToken;
+    capBusy = true;                    // 必须在首个 await 前置位，阻止 tick 重入
     try {
       state.status = '验证码出现：已暂停，正在识别…';
+
+      // 先取图，把图片签名纳入 key，区分“同一 URL 换了图”和“同一张图重试”。
       const b64 = await captureB64(cap.img);
+      if (!capFlowActive(token)) return false;
       if (b64) { state.capB64 = b64; state.capSig = sigOf(b64); }
 
+      const boxKey = cap.box ? (cap.box.id || String(cap.box.className || '') || cap.type) : cap.type;
+      const sessionKey = currentNodeId() + '|' + cap.type + '|' + boxKey;
+      const imageKey = (cap.img ? (cap.img.src || 'noimg') : 'noimg') + '|' + state.capSig;
+      if (sessionKey !== capSession) {
+        capSession = sessionKey;
+        capTries = 0;
+        capAttempt = 0;
+        capAt = 0;
+      }
+      if (imageKey !== capImageKey) {
+        capImageKey = imageKey;
+        capAttempt = 0;
+      }
+      if (capAt && Date.now() - capAt < 1500) return false;
+
+      // 路径 A：DOM 里直接读到答案
       if (cap.code) {
         log('DOM 读到验证码：', cap.code);
-        fill(cap.input, cap.code);
-        await sleep(150);
-        clickIt(cap.btn || findConfirm(cap.box || document));
+        await waitImageLoaded(cap.img && cap.img.el, 2000);
+        if (!capFlowActive(token)) return false;
+        await sleep(humanReadDelay(cap.code.length));
+        if (!capFlowActive(token)) return false;
+        await fillAll(cap, cap.code);
+        if (!capFlowActive(token)) return false;
+        await sleep(rand(320, 880));                 // 核对停顿
+        const r = await submitCode(cap, () => capFlowActive(token));
         capAt = Date.now();
-        await sleep(1500);
-        checkCaptchaCleared();
-        return;
+        if (!capFlowActive(token)) return false;
+        if (r.ok || !captchaHint(true)) {
+          state.status = '验证码通过 ✓ 继续播放';
+          state.capPassAt = Date.now();
+          resetCapAttempts();
+          hideManual();
+          log(state.status);
+          resume();
+          return true;
+        }
+        capTries++;
+        if (capTries >= Math.max(1, CFG.capRetry)) {
+          showManual('多次失败', state.capB64);
+        } else {
+          const how = await refreshCaptcha(cap.box || document);
+          state.status = '验证码未通过（' + capTries + '/' + CFG.capRetry + '），' + how;
+          warn(state.status);
+        }
+        return false;
       }
 
+      // 路径 B：OCR 识别
       if (state.ocrOk !== true) await pingOcr();
-      const text = b64 ? await ocr(b64) : '';
-      if (!text) {
+      if (!capFlowActive(token)) return false;
+      let text = b64 ? await ocr(b64) : '';
+      if (!capFlowActive(token)) return false;
+      // 之前健康、这次却网络失败：重新探测一次端点，避免服务重启后一直卡在旧端口。
+      if (!text && b64 && /^HTTP (?:0|5\d\d)\b/.test(state.ocrErr || '')) {
+        state.ocrOk = null;
+        await pingOcr();
+        if (!capFlowActive(token)) return false;
+        text = await ocr(b64);
+        if (!capFlowActive(token)) return false;
+      }
+      if (!text || !CODE_RE.test(text)) {
         capAt = Date.now();
-        warn('识别失败：' + (b64 ? ('OCR 返回空 ' + (state.ocrErr || '')) : '没取到图片') + ' → 手打');
+        warn('识别失败：' + (b64 ? ('OCR 返回无效 ' + JSON.stringify(text) + ' ' + (state.ocrErr || '')) : '没取到图片') + ' → 手打');
         showManual(b64 ? 'OCR 没认出来' : '没取到图', b64);
-        return;
+        return false;
       }
 
-      const variants = [text];
-      if (CFG.capCaseTry && /[a-zA-Z]/.test(text)) {
-        variants.push(text.toLowerCase(), text.toUpperCase());
-        const tc = text.toLowerCase().replace(/^([a-z])/, (m) => m.toUpperCase());
-        if (variants.indexOf(tc) < 0) variants.push(tc);
-      }
+      const variants = captchaVariants(text);
       const ans = variants[Math.min(capAttempt, variants.length - 1)];
-
       log('验证码识别', {
         定位: cap.type,
         图: cap.img ? cap.img.kind : '无',
@@ -1118,44 +1693,52 @@
         错误: state.ocrErr || '-',
       });
 
-      const filled = await fillAll(cap, ans);
-      if (!filled) {
-        state.status = '验证码识别成功但没写进输入框，转手打';
-        warn(state.status);
-        showManual('自动填写未生效', state.capB64);
-        return;
-      }
-      await sleep(150);
-      const r = await submitCode(cap);
+      // OCR 本身的 1~3s 已相当于“看图”时间，这里只加"看懂了准备打字"的短延迟
+      await waitImageLoaded(cap.img && cap.img.el, 1500);
+      if (!capFlowActive(token)) return false;
+      await sleep(rand(400, 900) + Math.min(600, text.length * 60));
+      if (!capFlowActive(token)) return false;
+      await fillAll(cap, ans);
+      if (!capFlowActive(token)) return false;
+      await sleep(rand(320, 880));                   // 核对停顿
+
+      const r = await submitCode(cap, () => capFlowActive(token));
       capAt = Date.now();
-      state.status = r.ok
+      if (!capFlowActive(token)) return false;
+      const stillOpen = r.by !== 'cancelled' && captchaHint(true);
+      state.status = r.ok && !stillOpen
         ? '验证码通过 ✓（' + r.by + '）'
         : '已填码但提交未生效（尝试了 ' + r.by + '）';
 
-      await sleep(600);
-      if (captchaHint()) {
-        capTries++;
+      if (stillOpen) {
         if (capAttempt + 1 < variants.length) {
           capAttempt++;
           state.status = '验证码未通过，换大小写（' + (capAttempt + 1) + '/' + variants.length + '）';
           warn(state.status);
         } else {
           capAttempt = 0;
-          const how = refreshCaptcha(cap.box || document);
-          state.status = '验证码未通过（' + capTries + '/' + CFG.capRetry + '），' + how;
-          warn(state.status);
-          if (capTries > CFG.capRetry) { capTries = 0; showManual('多次失败', state.capB64); }
+          capTries++;
+          if (capTries >= Math.max(1, CFG.capRetry)) {
+            showManual('多次失败', state.capB64);
+          } else {
+            const how = await refreshCaptcha(cap.box || document);
+            state.status = '验证码未通过（' + capTries + '/' + CFG.capRetry + '），' + how;
+            warn(state.status);
+          }
         }
       } else {
-        capTries = 0; capAttempt = 0;
         state.status = '验证码通过 ✓ 继续播放';
         state.capPassAt = Date.now();
+        resetCapAttempts();
         log(state.status);
         hideManual();
         resume();
+        return true;
       }
+      return false;
     } catch (e) {
       warn('验证码流程异常', e);
+      return false;
     } finally {
       capBusy = false;
       updatePanel();
@@ -1169,34 +1752,47 @@
     if (!v) return;
     watchPlayer(v);
 
-    // 先收拾平台弹的提示框：验证码阶段出现时，关掉后要马上重新填
-    const nagCount = dismissNag();
-    if (nagCount > 0) {
-      capKey = '';                 // 允许同一张图立即重试
-      capAt = 0;
-      state.status = '已关闭平台提示框，重新输入验证码…';
-    }
-
     const capOn = captchaHint() && (Date.now() - (state.capPassAt || 0) > 1500);
     state.capOnScreen = capOn;
 
     if (capOn) {
       capHold = true;
       try { if (!v.paused) v.pause(); } catch (e) {}
-      if (state.status.indexOf('暂停') < 0) {
+      if (state.status.indexOf('暂停') < 0 && !capManual) {
         state.status = '验证码出现，已暂停播放，识别后自动继续';
         log('暂停原因：页面上有可见的验证码弹窗');
       }
-      if (CFG.solveCaptcha) {
-        solveCaptcha();
-        if (!capBusy && !findCaptcha() && state.status.indexOf('没定位到') < 0) {
-          state.status = '验证码出现了但没定位到输入框，执行 API.capDebug() 看结构';
+
+      const cap = findCaptcha();
+      if (!CFG.solveCaptcha) {
+        // 关闭自动识别时也要给出手打入口；只展开一次，避免每秒重置输入框。
+        if (!capManual) {
+          showManual('自动识别已关闭');
+          const previewToken = capToken;
+          if (cap && cap.img) {
+            captureB64(cap.img).then((b64) => {
+              if (!b64 || previewToken !== capToken || !capManual || !captchaHint(true)) return;
+              state.capB64 = b64;
+              state.capSig = sigOf(b64);
+              const prev = document.getElementById(ID.prev);
+              if (prev) { prev.src = 'data:image/png;base64,' + b64; prev.style.display = 'block'; }
+            }).catch(() => {});
+          }
         }
+        return;
       }
+      if (capManual) return;
+      if (!cap) {
+        state.status = '验证码出现了但没定位到输入框' + (CFG.debug ? '，执行 ' + DBG_NAME + '.capDebug() 看结构' : '');
+        return;
+      }
+      if (!capBusy) solveCaptcha(cap);
       return;
     }
     if (capHold) {
       capHold = false;
+      resetCapAttempts();
+      hideManual();
       state.status = '验证码已通过，继续播放';
       log(state.status);
       if (CFG.autoPlay) resume();
@@ -1204,13 +1800,139 @@
 
     try {
       if (CFG.muted && !v.muted) v.muted = true;
-      if (v.playbackRate < CFG.rate) v.playbackRate = CFG.rate;
-      if (CFG.autoPlay && v.paused && !v.ended && v.readyState >= 2) v.play().catch(() => {});
+      if (CFG.playbackRate && CFG.playbackRate !== 1 && v.playbackRate !== CFG.playbackRate) {
+        try { v.playbackRate = CFG.playbackRate; } catch (e) {}
+      }
+      // simBreak=拟人"走神"暂停中、bootDelay=加载后的随机启动延迟，这两种情况都不抢着续播
+      if (CFG.autoPlay && !simBreak && Date.now() - bootAt > bootDelay &&
+          v.paused && !v.ended && v.readyState >= 2) v.play().catch(() => {});
     } catch (e) {}
     if (!armed && !busy && Date.now() - lastAt > 3000) armed = true;
   }
 
-  /* ==== 12. UI ==== */
+  /* ==== 12. 拟人操作 ==== */
+  let simBreak = false;                        // 拟人"走神"暂停中，tick 暂不自动续播
+  const bootAt = Date.now();                   // 页面加载时间
+  const bootDelay = rand(1500, 5000);          // 加载后随机 1.5-5 秒再开始自动播放
+
+  // 找一个点了不会有事的屏幕位置：落点是布局容器，它自己和祖先都不是可交互元素
+  const BLANK_TAG = /^(DIV|SECTION|MAIN|ARTICLE|ASIDE|HEADER|FOOTER|NAV)$/;
+  function blankPoint() {
+    for (let i = 0; i < 6; i++) {
+      const x = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
+      const y = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
+      const el = document.elementFromPoint(x, y);
+      if (!el || !BLANK_TAG.test(el.tagName) || el.isContentEditable || inOwnPanel(el)) continue;
+      if (el.closest('a,button,input,textarea,select,video,iframe,label,[contenteditable="true"],[role="button"],[onclick]')) continue;
+      if (/btn|button|link|item|row|tab|menu|close|play|cap/i.test(String(el.className || ''))) continue;
+      try { if ((el.ownerDocument.defaultView || window).getComputedStyle(el).cursor === 'pointer') continue; } catch (e) {}
+      return { x, y, el };
+    }
+    return null;
+  }
+
+  // 以随机时间间隔做一件"人味"小事：小幅滚动 / 鼠标漫游 / 空白处点击 / 短暂走神暂停 / 发呆不动。
+  // 等待走 Worker 定时器：后台标签页里主线程定时器会被 Chrome 节流，这里不受影响。
+  async function humanPulse() {
+    await sleep(rand(15000, 45000));               // 随机时间间隔：15-45 秒
+    // 验证码活跃期完全静默，避免抢焦点/拖动进度/打乱 capHold
+    if (capBusy || capManual || captchaHint()) {
+      humanPulse();
+      return;
+    }
+    if (CFG.enabled) {
+      try {
+        const dice = Math.random();
+        if (dice < 0.20) {
+          // 什么都不做（人也会发呆）
+        } else if (dice < 0.50) {
+          // 小幅滚动屏幕：1-3 段，方向随机，段间随机停顿
+          const n = 1 + Math.floor(rand(0, 3));
+          for (let i = 0; i < n; i++) {
+            const dy = Math.round(rand(-180, 240));
+            if (dy) window.scrollBy({ top: dy, behavior: 'smooth' });
+            await sleep(rand(400, 1500));
+          }
+        } else if (dice < 0.75) {
+          // 鼠标漫游：走完整 pointer 链，带 movementX/Y 与 coalesced events
+          const n = 2 + Math.floor(rand(0, 4));
+          for (let i = 0; i < n; i++) {
+            const tx = Math.round(rand(20, Math.max(40, window.innerWidth - 20)));
+            const ty = Math.round(rand(20, Math.max(40, window.innerHeight - 20)));
+            await movePointerTo(tx, ty);
+            await sleep(rand(200, 700));
+          }
+        } else if (dice < 0.90) {
+          // 页面空白处点一下鼠标：只点确认过不是链接 / 按钮 / 播放器的容器，
+          // 事件发给落点上真正的元素（真实点击命中的就是它）
+          const p = blankPoint();
+          if (p) {
+            await movePointerTo(p.x, p.y);
+            const o = { bubbles: true, cancelable: true, composed: true, view: window,
+              clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
+              pointerId: 1, pointerType: 'mouse', isPrimary: true,
+              button: 0, buttons: 1 };
+            p.el.dispatchEvent(new PE('pointerdown', o));
+            p.el.dispatchEvent(new MouseEvent('mousedown', o));
+            await sleep(rand(40, 140));
+            const o2 = Object.assign({}, o, { buttons: 0 });
+            p.el.dispatchEvent(new PE('pointerup', o2));
+            p.el.dispatchEvent(new MouseEvent('mouseup', o2));
+            p.el.dispatchEvent(new MouseEvent('click', o2));
+          }
+        } else {
+          // 短暂"走神"：暂停视频 2-6 秒再续播（simBreak 期间 tick 不抢着恢复）
+          const v = player();
+          if (v && !v.paused) {
+            simBreak = true;
+            try {
+              try { v.pause(); } catch (e) {}
+              await sleep(rand(2000, 6000));
+            } finally {
+              simBreak = false;
+              // 恢复播放前检查：若走神期间弹了验证码，或用户关了开关，就不续播
+              if (CFG.enabled && CFG.autoPlay && !captchaHint()) {
+                try { v.play().catch(() => {}); } catch (e) {}
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    humanPulse();                                  // 下一轮，间隔重新随机
+  }
+
+  // 键盘 Activity 心跳：30-90s 随机按一个导航键（不触发默认行为，仅派发事件）
+  const isEditableTarget = (el) => !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '')));
+  async function keyboardPulse() {
+    await sleep(rand(30000, 90000));
+    const active = document.activeElement;
+    // 不打断用户输入，也不在弹窗/验证码期间派发 Esc/Tab 等可能有关闭语义的键。
+    if (CFG.enabled && !capBusy && !capManual && !captchaHint() &&
+        !isEditableTarget(active) && !inOwnPanel(active)) {
+      try {
+        const KEYS = [
+          { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+          { key: 'ArrowUp',   code: 'ArrowUp',   keyCode: 38 },
+          { key: 'PageDown',  code: 'PageDown',  keyCode: 34 },
+          { key: 'PageUp',    code: 'PageUp',    keyCode: 33 },
+        ];
+        const k = KEYS[Math.floor(rand(0, KEYS.length))];
+        const target = (active && active !== document.body) ? active : document.body;
+        const base = { bubbles: true, cancelable: true, composed: true, view: window, key: k.key, code: k.code };
+        const kd = new KeyboardEvent('keydown', base);
+        setEventProp(kd, 'keyCode', k.keyCode); setEventProp(kd, 'which', k.keyCode); setEventProp(kd, 'charCode', 0);
+        target.dispatchEvent(kd);
+        await sleep(rand(40, 140));
+        const ku = new KeyboardEvent('keyup', base);
+        setEventProp(ku, 'keyCode', k.keyCode); setEventProp(ku, 'which', k.keyCode); setEventProp(ku, 'charCode', 0);
+        target.dispatchEvent(ku);
+      } catch (e) {}
+    }
+    keyboardPulse();
+  }
+
+  /* ==== 13. UI ==== */
   const fmt = (s) => {
     if (!isFinite(s) || s < 0) return '--:--';
     s = Math.floor(s);
@@ -1218,89 +1940,71 @@
   };
 
   const CSS = [
-    '#__cyber_panel__{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:212px;box-sizing:border-box;',
+    '#' + ID.panel + '{position:fixed;right:16px;bottom:16px;z-index:2147483647;width:212px;box-sizing:border-box;',
     'padding:10px 11px 11px;border-radius:12px;',
     'background:linear-gradient(180deg,rgba(30,33,42,.97),rgba(18,20,26,.97))!important;',
     'border:1px solid rgba(255,255,255,.09)!important;',
     'box-shadow:0 12px 34px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.05)!important;',
     'color:#e6e9ef!important;user-select:none;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);',
     'font:12px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif!important;}',
-    '#__cyber_panel__ *{box-sizing:border-box;margin:0;padding:0;font-family:inherit!important;line-height:1.5!important}',
-    '#__cyber_panel__ .cy-hd{display:flex;align-items:center;gap:7px;cursor:move;margin-bottom:8px!important}',
-    '#__cyber_panel__ .cy-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#8b93a1!important;',
+    '#' + ID.panel + ' *{box-sizing:border-box;margin:0;padding:0;font-family:inherit!important;line-height:1.5!important}',
+    '#' + ID.panel + ' .[K]-hd{display:flex;align-items:center;gap:7px;cursor:move;margin-bottom:8px!important}',
+    '#' + ID.panel + ' .[K]-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#8b93a1!important;',
     'box-shadow:0 0 0 3px rgba(139,147,161,.16)!important;transition:background .25s,box-shadow .25s}',
-    '#__cyber_panel__ .cy-dot[data-s="play"]{background:#28c76f!important;box-shadow:0 0 0 3px rgba(40,199,111,.18)!important}',
-    '#__cyber_panel__ .cy-dot[data-s="pause"]{background:#ffd166!important;box-shadow:0 0 0 3px rgba(255,209,102,.18)!important}',
-    '#__cyber_panel__ .cy-dot[data-s="cap"]{background:#ffa94d!important;box-shadow:0 0 0 3px rgba(255,169,77,.18)!important}',
-    '#__cyber_panel__ .cy-title{font-size:12px!important;font-weight:600!important;color:#e6e9ef!important;letter-spacing:.3px}',
-    '#__cyber_panel__ .cy-fold{margin-left:auto!important;color:#8b93a1!important;font-size:11px!important;cursor:pointer;',
+    '#' + ID.panel + ' .[K]-dot[data-s="play"]{background:#28c76f!important;box-shadow:0 0 0 3px rgba(40,199,111,.18)!important}',
+    '#' + ID.panel + ' .[K]-dot[data-s="pause"]{background:#ffd166!important;box-shadow:0 0 0 3px rgba(255,209,102,.18)!important}',
+    '#' + ID.panel + ' .[K]-dot[data-s="cap"]{background:#ffa94d!important;box-shadow:0 0 0 3px rgba(255,169,77,.18)!important}',
+    '#' + ID.panel + ' .[K]-title{font-size:12px!important;font-weight:600!important;color:#e6e9ef!important;letter-spacing:.3px}',
+    '#' + ID.panel + ' .[K]-fold{margin-left:auto!important;color:#8b93a1!important;font-size:11px!important;cursor:pointer;',
     'padding:0 2px!important;transition:transform .18s;display:inline-block}',
-    '#__cyber_panel__.cy-collapsed .cy-fold{transform:rotate(-90deg)}',
-    '#__cyber_panel__.cy-collapsed .cy-body{display:none}',
-    '#__cyber_panel__ .cy-meta{color:#9aa4b2!important;font-size:11px!important;margin-bottom:7px!important;',
+    '#' + ID.panel + '.[K]-collapsed .[K]-fold{transform:rotate(-90deg)}',
+    '#' + ID.panel + '.[K]-collapsed .[K]-body{display:none}',
+    '#' + ID.panel + ' .[K]-meta{color:#9aa4b2!important;font-size:11px!important;margin-bottom:7px!important;',
     'white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '#__cyber_panel__ .cy-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.1)!important;overflow:hidden;margin-bottom:9px!important}',
-    '#__cyber_panel__ .cy-bar>i{display:block;height:100%;width:0;border-radius:2px;',
+    '#' + ID.panel + ' .[K]-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.1)!important;overflow:hidden;margin-bottom:9px!important}',
+    '#' + ID.panel + ' .[K]-bar>i{display:block;height:100%;width:0;border-radius:2px;',
     'background:linear-gradient(90deg,#28c76f,#4ade80)!important;transition:width .45s linear}',
-    '#__cyber_panel__ .cy-rates{display:flex;gap:3px;padding:3px!important;border-radius:8px!important;background:rgba(255,255,255,.06)!important}',
-    '#__cyber_panel__ .cy-rate{flex:1;appearance:none!important;-webkit-appearance:none!important;border:0!important;outline:0!important;',
-    'border-radius:6px!important;padding:4px 0!important;font-size:11px!important;font-weight:600!important;cursor:pointer;',
-    'background:transparent!important;color:#9aa4b2!important;transition:background .15s,color .15s,box-shadow .15s}',
-    '#__cyber_panel__ .cy-rate:hover{color:#e6e9ef!important;background:rgba(255,255,255,.08)!important}',
-    '#__cyber_panel__ .cy-rate[data-on="1"]{background:#28c76f!important;color:#06240f!important;',
-    'box-shadow:0 2px 10px rgba(40,199,111,.4)!important}',
-    '#__cyber_panel__ .cy-sw{display:flex;align-items:center;gap:8px;margin-top:8px!important;cursor:pointer;',
+    '#' + ID.panel + ' .[K]-sw{display:flex;align-items:center;gap:8px;margin-top:8px!important;cursor:pointer;',
     'color:#c9d3e0!important;font-size:11px!important}',
-    '#__cyber_panel__ .cy-sw input{position:absolute!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}',
-    '#__cyber_panel__ .cy-track{position:relative;width:26px;height:15px;border-radius:99px;flex:0 0 auto;',
+    '#' + ID.panel + ' .[K]-sw input{position:absolute!important;opacity:0!important;width:0!important;height:0!important;pointer-events:none!important}',
+    '#' + ID.panel + ' .[K]-track{position:relative;width:26px;height:15px;border-radius:99px;flex:0 0 auto;',
     'background:rgba(255,255,255,.14)!important;transition:background .2s;display:inline-block}',
-    '#__cyber_panel__ .cy-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;',
+    '#' + ID.panel + ' .[K]-knob{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;',
     'background:#8b93a1!important;transition:left .2s,background .2s}',
-    '#__cyber_panel__ .cy-sw input:checked~.cy-track{background:#28c76f!important}',
-    '#__cyber_panel__ .cy-sw input:checked~.cy-track .cy-knob{left:13px;background:#fff!important}',
-    '#__cyber_panel__ .cy-manual{display:none;margin-top:8px!important;padding-top:8px!important;',
+    '#' + ID.panel + ' .[K]-sw input:checked~.[K]-track{background:#28c76f!important}',
+    '#' + ID.panel + ' .[K]-sw input:checked~.[K]-track .[K]-knob{left:13px;background:#fff!important}',
+    '#' + ID.panel + ' .[K]-manual{display:none;margin-top:8px!important;padding-top:8px!important;',
     'border-top:1px solid rgba(255,255,255,.08)!important}',
-    '#__cyber_panel__ .cy-prev{display:none;width:100%;max-height:44px;object-fit:contain;background:#fff!important;',
+    '#' + ID.panel + ' .[K]-prev{display:none;width:100%;max-height:44px;object-fit:contain;background:#fff!important;',
     'border-radius:5px;margin-bottom:5px!important;cursor:zoom-in;image-rendering:pixelated}',
-    '#__cyber_panel__ .cy-row{display:flex;gap:4px}',
-    '#__cyber_panel__ .cy-min{flex:1;min-width:0;background:#2b2f3a!important;border:1px solid #5b8def!important;',
+    '#' + ID.panel + ' .[K]-row{display:flex;gap:4px}',
+    '#' + ID.panel + ' .[K]-min{flex:1;min-width:0;background:#2b2f3a!important;border:1px solid #5b8def!important;',
     'border-radius:5px!important;color:#fff!important;font-size:12px!important;padding:3px 6px!important;letter-spacing:2px}',
-    '#__cyber_panel__ .cy-ok{flex:0 0 auto;cursor:pointer;border:0!important;border-radius:5px!important;',
+    '#' + ID.panel + ' .[K]-ok{flex:0 0 auto;cursor:pointer;border:0!important;border-radius:5px!important;',
     'padding:3px 8px!important;font-size:11px!important;color:#06240f!important;background:#28c76f!important;font-weight:600}',
-    '#__cyber_panel__ .cy-msg{display:none;margin-top:8px!important;padding:5px 8px!important;border-radius:6px!important;',
+    '#' + ID.panel + ' .[K]-msg{display:none;margin-top:8px!important;padding:5px 8px!important;border-radius:6px!important;',
     'font-size:11px!important;color:#ffc078!important;background:rgba(255,169,77,.12)!important;word-break:break-all}',
-    '#__cyber_panel__.cy-off{background:linear-gradient(180deg,rgba(26,28,34,.97),rgba(16,17,22,.97))!important}',
-    '#__cyber_panel__.cy-off .cy-dot{background:#5b6270!important;box-shadow:none!important}',
-    '#__cyber_panel__.cy-off .cy-title{color:#8b93a1!important}',
-    '#__cyber_panel__.cy-off .cy-body{opacity:.45!important}',
-    '#__cyber_panel__.cy-off .cy-rates{pointer-events:none!important}',
-    '#__cyber_panel__.cy-off .cy-sw:not(.cy-master){pointer-events:none!important}',
-    '#__cyber_panel__ .cy-sw.cy-master{padding-top:8px!important;border-top:1px solid rgba(255,255,255,.07)!important;',
+    '#' + ID.panel + '.[K]-off{background:linear-gradient(180deg,rgba(26,28,34,.97),rgba(16,17,22,.97))!important}',
+    '#' + ID.panel + '.[K]-off .[K]-dot{background:#5b6270!important;box-shadow:none!important}',
+    '#' + ID.panel + '.[K]-off .[K]-title{color:#8b93a1!important}',
+    '#' + ID.panel + '.[K]-off .[K]-body{opacity:.45!important}',
+    '#' + ID.panel + '.[K]-off .[K]-sw:not(.[K]-master){pointer-events:none!important}',
+    '#' + ID.panel + ' .[K]-sw.[K]-master{padding-top:8px!important;border-top:1px solid rgba(255,255,255,.07)!important;',
     'color:#e6e9ef!important;font-weight:600!important}',
-  ].join('').split('#__cyber_panel__').join('#' + PID).split('.cy-').join('.' + K + '-');
-
-  let panelTimer = null;
-  function startPanelLoop() {
-    if (panelTimer) return;
-    const run = function () {
-      try { updatePanel(); } catch (e) {}
-      panelTimer = setTimeout(run, 900 + Math.random() * 400);
-    };
-    panelTimer = setTimeout(run, 900);
-  }
+  ].join('');
 
   function injectCss() {
-    if (document.getElementById(SID)) return;
+    if (document.getElementById(ID.style)) return;
     const st = document.createElement('style');
-    st.id = SID;
-    st.textContent = CSS;
+    st.id = ID.style;
+    st.textContent = CSS.split('[K]').join(K);
     (document.head || document.documentElement).appendChild(st);
   }
 
   function updatePanel() {
-    const box = document.getElementById(PID);
+    const box = document.getElementById(ID.panel);
     if (!box) return;
-    const v = player(), p = progress();
+    const v = player(), p = progress(), total = totalDuration(v);
     const dot = box.querySelector('.' + K + '-dot');
     const meta = box.querySelector('.' + K + '-meta');
     const bar = box.querySelector('.' + K + '-bar > i');
@@ -1312,12 +2016,11 @@
 
     if (meta) {
       meta.textContent = !CFG.enabled
-        ? '已停用：不加速、不自动播放、不跳节'
+        ? '已停用：不自动播放、不跳节'
         : (p.total ? '第 ' + (p.index || '?') + '/' + p.total + ' 节' : '目录未识别') +
-          (v ? ' · ' + v.playbackRate + 'x · ' + fmt(v.currentTime) + '/' + fmt(totalDuration()) : '');
+          (v ? ' · ' + fmt(v.currentTime) + '/' + fmt(total) : '');
     }
     if (bar) {
-      const total = totalDuration();
       bar.style.width = (!CFG.enabled || !v || !total ? 0 : Math.min(100, (v.currentTime / total) * 100)) + '%';
     }
     const text = state.bootError ? ('启动异常：' + state.bootError.message) : state.status;
@@ -1330,22 +2033,25 @@
 
   function applyEnabled(on) {
     CFG.enabled = !!on;
+    capToken++;                       // 让正在等待的验证码流程尽快失效
+    resetCapAttempts();
     save();
+    if (CFG.enabled) startKeepAlive();
+    else stopKeepAlive();
     const v = player();
-    if (v) {
-      try {
-        if (on) {
-          v.playbackRate = CFG.rate;
-          if (CFG.muted) v.muted = true;
-          state.status = '已启用：' + CFG.rate + 'x 播放中';
-        } else {
-          capHold = false;
-          v.playbackRate = 1;
-          v.muted = false;
-          state.status = '已停用';
-          hideManual();
-        }
-      } catch (e) {}
+    if (on) {
+      capManual = false;
+      if (v) {
+        try { if (CFG.muted) v.muted = true; } catch (e) {}
+      }
+      state.status = '已启用';
+    } else {
+      capHold = false;
+      hideManual();
+      if (v) {
+        try { v.muted = false; } catch (e) {}
+      }
+      state.status = '已停用';
     }
     updatePanel();
     log(CFG.enabled ? '已启用' : '已停用');
@@ -1363,8 +2069,10 @@
     });
     hd.addEventListener('pointermove', (e) => {
       if (!drag) return;
-      box.style.left = Math.max(4, ox + e.clientX - sx) + 'px';
-      box.style.top = Math.max(4, oy + e.clientY - sy) + 'px';
+      const maxLeft = Math.max(4, window.innerWidth - box.offsetWidth - 4);
+      const maxTop = Math.max(4, window.innerHeight - box.offsetHeight - 4);
+      box.style.left = Math.min(maxLeft, Math.max(4, ox + e.clientX - sx)) + 'px';
+      box.style.top = Math.min(maxTop, Math.max(4, oy + e.clientY - sy)) + 'px';
     });
     const up = () => {
       if (!drag) return;
@@ -1396,11 +2104,11 @@
   }
 
   function panel() {
-    if (document.getElementById(PID)) return;
+    if (document.getElementById(ID.panel)) return;
     injectCss();
 
     const box = document.createElement('div');
-    box.id = PID;
+    box.id = ID.panel;
     if (CFG.hidePanel) box.classList.add(K + '-collapsed');
     if (CFG.panelPos) {
       box.style.right = 'auto'; box.style.bottom = 'auto';
@@ -1415,7 +2123,7 @@
     dot.setAttribute('data-s', 'idle');
     const title = document.createElement('span');
     title.className = K + '-title';
-    title.textContent = '倍速';
+    title.textContent = TITLE;
     const fold = document.createElement('span');
     fold.className = K + '-fold';
     fold.textContent = '▾';
@@ -1434,50 +2142,38 @@
     bar.className = K + '-bar';
     bar.appendChild(document.createElement('i'));
 
-    const rates = document.createElement('div');
-    rates.className = K + '-rates';
-    const setActive = (r) => {
-      rates.querySelectorAll('.' + K + '-rate').forEach((b) => {
-        b.setAttribute('data-on', Number(b.dataset.rate) === Number(r) ? '1' : '0');
-      });
-    };
-    [1, 2, 4, 8].forEach((r) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = K + '-rate';
-      b.dataset.rate = r;
-      b.textContent = r + 'x';
-      b.addEventListener('click', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        CFG.rate = r; save();
-        const v = player();
-        if (v) { try { v.playbackRate = r; } catch (err) {} }
-        setActive(r); updatePanel();
-        log('倍速', r);
-      });
-      rates.appendChild(b);
-    });
-    setActive(CFG.rate);
-
-    const master = mkSwitch('启用脚本', CFG.enabled, (on) => applyEnabled(on), K + '-master', MASTERID);
+    const master = mkSwitch('启用脚本', CFG.enabled, (on) => applyEnabled(on), K + '-master', ID.master);
     const autoSw = mkSwitch('自动下一节', CFG.autoNext, (on) => { CFG.autoNext = on; save(); });
+    const muteSw = mkSwitch('自动静音', CFG.muted, (on) => {
+      CFG.muted = on;
+      save();
+      const v = player();
+      if (v) { try { v.muted = on; } catch (e) {} }
+    });
     const capSw = mkSwitch('自动识别验证码', CFG.solveCaptcha, (on) => {
-      CFG.solveCaptcha = on; save();
-      if (on) { capKey = ''; if (state.ocrOk !== true) pingOcr(); }
+      CFG.solveCaptcha = on;
+      capToken++;
+      resetCapAttempts();
+      save();
+      if (on) {
+        capManual = false;
+        hideManual();
+        if (state.ocrOk !== true) pingOcr();
+      }
     }, K + '-capsw');
 
     const manual = document.createElement('div');
     manual.className = K + '-manual';
-    manual.id = MID;
+    manual.id = ID.manual;
     const prev = document.createElement('img');
     prev.className = K + '-prev';
-    prev.id = PREVID;
+    prev.id = ID.prev;
     prev.onclick = () => { if (prev.src) window.open(prev.src); };
     const row = document.createElement('div');
     row.className = K + '-row';
     const min = document.createElement('input');
     min.className = K + '-min';
-    min.id = INID;
+    min.id = ID.min;
     min.placeholder = '手打验证码后回车';
     min.onkeydown = (e) => { if (e.key === 'Enter') submitManual(); };
     const ok = document.createElement('button');
@@ -1491,15 +2187,16 @@
     const msg = document.createElement('div');
     msg.className = K + '-msg';
 
-    body.append(meta, bar, rates, master, autoSw, capSw, manual, msg);
+    body.append(meta, bar, master, autoSw, muteSw, capSw, manual, msg);
     box.append(hd, body);
     (document.body || document.documentElement).appendChild(box);
 
     try { makeDraggable(box, hd); } catch (e) {}
+    setInterval(updatePanel, 1000);
     updatePanel();
   }
 
-  /* ==== 13. 诊断 ==== */
+  /* ==== 14. 诊断 ==== */
   function capDebug() {
     console.group('%c[赛博代刷] 验证码诊断 v' + VERSION, 'color:#8ab4f8;font-weight:600');
     const box = document.getElementById('video-captcha');
@@ -1543,7 +2240,6 @@
 
   function selfTest() {
     const v = player();
-    const active = document.querySelector('#__cyber_panel__ .cy-rate[data-on="1"]');
     const out = {
       version: VERSION,
       host: location.hostname,
@@ -1551,39 +2247,38 @@
       errors: API.errors,
       bootError: state.bootError && state.bootError.message,
       enabled: CFG.enabled,
-      rate: v ? v.playbackRate : null,
-      activeBtn: active ? active.textContent : null,
       node: currentNodeId() || null,
       progress: progress(),
-      duration: totalDuration(),
+      duration: totalDuration(v),
       video: !!v,
       captchaContainer: captchaPresent(),
       captchaOnScreen: state.capOnScreen,
       capHold,
+      capBusy,
+      capManual,
+      capTries,
+      capAttempt,
       solveCaptcha: CFG.solveCaptcha,
+      keepAlive: { enabled: CFG.keepAlive, started: !!keepAudio, playing: !!(keepAudio && !keepAudio.paused) },
+      playbackRate: CFG.playbackRate,
       ocr: { ok: state.ocrOk, active: state.ocrActive || '(无)', err: state.ocrErr || '' },
     };
     console.table(out);
     return out;
   }
 
-  /* ==== 14. 启动 ==== */
+  /* ==== 15. 启动 ==== */
   Object.assign(API, {
     cfg: CFG, state,
     player, nodeLinks, currentNodeId, nextNode, progress, totalDuration, captchaPresent, captchaHint,
     goNext, panel, selfTest, updatePanel, tick, applyEnabled,
     findCaptcha, captureB64, solveCaptcha, pingOcr, ocrTest, ocr, capDebug,
-    showManual, submitManual, resume, refreshCaptcha,
-    dayStat, quotaGate,
-    setEnabled: (on) => { applyEnabled(on); const cb = document.getElementById(MASTERID); if (cb) cb.checked = !!on; },
-    setRate: (r) => {
-      const n = Number(r) || 4;
-      const b = document.querySelector('#__cyber_panel__ .cy-rate[data-rate="' + n + '"]');
-      if (b) b.click();
-      else { CFG.rate = n; save(); updatePanel(); }
-    },
+    showManual, hideManual, submitManual, resume, refreshCaptcha,
+    setEnabled: (on) => { applyEnabled(on); const cb = document.getElementById(ID.master); if (cb) cb.checked = !!on; },
     isEnabled: () => CFG.enabled,
     isBusy: () => capBusy,
+    isManual: () => capManual,
+    resetCapAttempts,
     status: () => state.status,
   });
 
@@ -1591,12 +2286,18 @@
     panel();
     const p = progress();
     log('已启动 v' + VERSION + ' | 节点', currentNodeId() || '?', '|', p.index + '/' + p.total,
-      '| 倍速', CFG.rate + 'x', '| 验证码', CFG.solveCaptcha ? '自动' : '手打');
-    pingOcr();
-    (function loopTick() { tick(); setTimeout(loopTick, 700 + Math.random() * 500); })();
-    (function loopResume() {
-      setTimeout(loopResume, 25000 + Math.random() * 20000);
-    })();
+      '| 验证码', CFG.solveCaptcha ? '自动' : '手打',
+      '| 倍速', CFG.playbackRate);
+    // OCR 是可选组件，不在启动时探测，等验证码真出现再探（见 solveCaptcha）
+    startKeepAlive();
+    humanPulse();
+    keyboardPulse();
+    setInterval(tick, 800);
+    setInterval(() => {
+      if (!CFG.enabled || simBreak) return;
+      const v = player();
+      if (v && v.paused && CFG.autoPlay && !v.ended && !captchaHint()) v.play().catch(() => {});
+    }, 30000);
     tick();
     updatePanel();
   }
@@ -1604,6 +2305,6 @@
   try { boot(); API.ready = true; } catch (e) {
     state.bootError = e;
     API.errors.push('boot: ' + e.message);
-    console.error('%c[赛博代刷] 启动异常（API.selfTest() 可用）', 'color:#ff6b6b;font-weight:600', e);
+    console.error('%c[赛博代刷] 启动异常' + (CFG.debug ? '（' + DBG_NAME + '.selfTest() 可用）' : ''), 'color:#ff6b6b;font-weight:600', e);
   }
 })();
